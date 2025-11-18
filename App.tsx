@@ -1,0 +1,653 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import { Sidebar } from './components/Sidebar';
+import { ChatPanel } from './components/ChatPanel';
+import { SourceViewer } from './components/SourceViewer';
+import { StudioPanel } from './components/StudioPanel';
+import { Assistant } from './components/Assistant';
+import { generateGroundedResponse, extractTextAndContentFromFile, extractContentFromUrl, generateNotebookName, generateMindMap, generateAudioSummary, summarizeSourceContent } from './services/geminiService';
+import type { Source, ChatMessage, SourceContent, Notebook, StudioHistoryItem } from './types';
+import { XMarkIcon, SpinnerIcon } from './components/Icons';
+
+const APP_STORAGE_KEY = 'notebooklm-clone-state';
+
+const getSanitizedNotebooksForStorage = (notebooksToSave: Notebook[]): Notebook[] => {
+  return notebooksToSave.map(notebook => ({
+    ...notebook,
+    sources: notebook.sources.map(source => {
+      if (source.content && (
+        source.content.type === 'image' ||
+        source.content.type === 'pdf' ||
+        source.content.type === 'audio' ||
+        source.content.type === 'video'
+      )) {
+        return { ...source, content: null };
+      }
+      return source;
+    })
+  }));
+};
+
+const openMindMapInNewTab = (mindMapData: any) => {
+    const jsonString = JSON.stringify(mindMapData);
+    const title = (mindMapData.label || 'Bản đồ tư duy').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="vi">
+      <head>
+          <meta charset="UTF-8">
+          <title>Bản đồ tư duy: ${title}</title>
+          <style>
+              body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; }
+              #scene { width: 100%; height: 100%; cursor: grab; position: relative; }
+              #scene:active { cursor: grabbing; }
+              #mindmap-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; z-index: 1; pointer-events: none; }
+              .connector { stroke-width: 2px; fill: none; }
+              #mindmap-container { display: inline-block; padding: 50px; position: absolute; left: 50px; top: 50%; transform: translateY(-50%); z-index: 2;}
+              .mindmap-list { list-style: none; padding-left: 40px; position: relative; }
+              .mindmap-list li { position: relative; margin: 20px 0; }
+              .node {
+                  display: inline-block;
+                  padding: 8px 16px;
+                  border-radius: 9999px;
+                  border: 2px solid;
+                  font-size: 14px;
+                  font-weight: 500;
+                  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                  white-space: nowrap;
+                  background-color: var(--bg-color, #fff);
+                  color: var(--text-color, #000);
+                  border-color: var(--border-color, #ccc);
+                  cursor: default;
+              }
+              .node.root {
+                  font-weight: bold; font-size: 18px; padding: 12px 24px;
+                  background-color: #4f46e5; color: white; border-color: #312e81;
+              }
+              .toggle {
+                  position: absolute; left: -25px; top: 50%; transform: translateY(-50%);
+                  width: 18px; height: 18px; border-radius: 50%;
+                  background-color: #cbd5e1; color: #475569;
+                  display: flex; align-items: center; justify-content: center;
+                  font-family: monospace; font-size: 14px; font-weight: bold;
+                  cursor: pointer; user-select: none;
+                  border: 1px solid #94a3b8;
+              }
+              .toggle:hover { background-color: #94a3b8; color: white; }
+              li.collapsed > .mindmap-list { display: none; }
+          </style>
+      </head>
+      <body>
+          <div id="scene">
+              <svg id="mindmap-svg"></svg>
+              <div id="mindmap-container"></div>
+          </div>
+          <script src="https://unpkg.com/panzoom@9.4.0/dist/panzoom.min.js"></script>
+          <script>
+              document.addEventListener('DOMContentLoaded', () => {
+                  const data = ${jsonString};
+                  const container = document.getElementById('mindmap-container');
+                  const svg = document.getElementById('mindmap-svg');
+                  
+                  const colorPalette = [
+                      { bg: '#e0f2fe', text: '#075985', border: '#7dd3fc' }, // Sky
+                      { bg: '#dcfce7', text: '#166534', border: '#86efac' }, // Green
+                      { bg: '#fef3c7', text: '#92400e', border: '#fcd34d' }, // Amber
+                      { bg: '#fee2e2', text: '#991b1b', border: '#fca5a5' }, // Red
+                      { bg: '#ede9fe', text: '#5b21b6', border: '#a78bfa' }, // Violet
+                      { bg: '#ffedd5', text: '#9a3412', border: '#fdba74' }, // Orange
+                      { bg: '#fce7f3', text: '#9d174d', border: '#f9a8d4' }, // Pink
+                  ];
+
+                  function createBranch(nodeData, parentUl, level, color) {
+                      if (!nodeData || !nodeData.label) return;
+
+                      const li = document.createElement('li');
+                      li.dataset.id = 'node-' + Math.random().toString(36).substr(2, 9);
+
+                      const nodeEl = document.createElement('div');
+                      nodeEl.className = 'node' + (level === 0 ? ' root' : '');
+                      nodeEl.textContent = nodeData.label.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                      nodeEl.style.setProperty('--bg-color', color.bg);
+                      nodeEl.style.setProperty('--text-color', color.text);
+                      nodeEl.style.setProperty('--border-color', color.border);
+                      
+                      li.appendChild(nodeEl);
+                      parentUl.appendChild(li);
+
+                      const hasChildren = nodeData.children && nodeData.children.length > 0;
+                      if (hasChildren) {
+                          const toggle = document.createElement('span');
+                          toggle.className = 'toggle';
+                          toggle.textContent = '<';
+                          li.insertBefore(toggle, nodeEl);
+
+                          toggle.addEventListener('click', (e) => {
+                              e.stopPropagation();
+                              li.classList.toggle('collapsed');
+                              toggle.textContent = li.classList.contains('collapsed') ? '>' : '<';
+                              // Use a timeout to allow the DOM to update before redrawing
+                              setTimeout(drawAllConnectors, 50);
+                          });
+
+                          const childUl = document.createElement('ul');
+                          childUl.className = 'mindmap-list';
+                          li.appendChild(childUl);
+
+                          nodeData.children.forEach(child => {
+                              createBranch(child, childUl, level + 1, color);
+                          });
+                      }
+                  }
+                  
+                  function drawAllConnectors() {
+                      svg.innerHTML = '';
+                      const allNodes = Array.from(document.querySelectorAll('.node'));
+                      allNodes.forEach(childNodeEl => {
+                          const parentLi = childNodeEl.parentElement.parentElement.parentElement;
+                          if (parentLi && parentLi.tagName === 'LI') {
+                              const parentNodeEl = parentLi.querySelector(':scope > .node');
+                              if(parentNodeEl && childNodeEl.offsetParent !== null) { // Check if visible
+                                  drawConnector(parentNodeEl, childNodeEl);
+                              }
+                          }
+                      });
+                  }
+
+                  function drawConnector(parentEl, childEl) {
+                      const containerRect = container.getBoundingClientRect();
+                      
+                      const parentRect = parentEl.getBoundingClientRect();
+                      const childRect = childEl.getBoundingClientRect();
+                      
+                      const startX = parentRect.right - containerRect.left;
+                      const startY = parentRect.top + parentRect.height / 2 - containerRect.top;
+                      const endX = childRect.left - containerRect.left;
+                      const endY = childRect.top + childRect.height / 2 - containerRect.top;
+
+                      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                      const controlX1 = startX + (endX - startX) * 0.5;
+                      const controlX2 = endX - (endX - startX) * 0.5;
+                      path.setAttribute('d', \`M\${startX},\${startY} C\${controlX1},\${startY} \${controlX2},\${endY} \${endX},\${endY}\`);
+                      path.setAttribute('class', 'connector');
+                      path.style.stroke = parentEl.style.getPropertyValue('--border-color');
+                      svg.appendChild(path);
+                  }
+
+                  // Build the mind map structure
+                  const rootUl = document.createElement('ul');
+                  rootUl.className = 'mindmap-list';
+                  rootUl.style.paddingLeft = '0';
+                  
+                  const rootLi = document.createElement('li');
+                  const rootNodeEl = document.createElement('div');
+                  rootNodeEl.className = 'node root';
+                  rootNodeEl.textContent = data.label.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  rootLi.appendChild(rootNodeEl);
+                  rootUl.appendChild(rootLi);
+
+                  if (data.children && data.children.length > 0) {
+                      const childUl = document.createElement('ul');
+                      childUl.className = 'mindmap-list';
+                      rootLi.appendChild(childUl);
+                      data.children.forEach((child, index) => {
+                          const color = colorPalette[index % colorPalette.length];
+                          createBranch(child, childUl, 1, color);
+                      });
+                  }
+                  container.appendChild(rootUl);
+                  
+                  // Initial drawing and panzoom setup
+                  setTimeout(() => {
+                      drawAllConnectors();
+                      const scene = document.getElementById('scene');
+                      const panzoomInstance = panzoom(scene, {
+                          maxZoom: 2,
+                          minZoom: 0.2,
+                          bounds: true,
+                          boundsPadding: 0.1,
+                      });
+                  }, 50);
+
+              });
+          </script>
+      </body>
+      </html>
+    `;
+    const newWindow = window.open();
+    if (newWindow) {
+        newWindow.document.write(htmlContent);
+        newWindow.document.close();
+    }
+};
+
+
+const SummaryModal: React.FC<{
+    isOpen: boolean;
+    isLoading: boolean;
+    content: string;
+    sourceName: string;
+    onClose: () => void;
+}> = ({ isOpen, isLoading, content, sourceName, onClose }) => {
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl flex flex-col max-h-[90vh]">
+                <div className="flex justify-between items-center mb-4 flex-shrink-0">
+                    <h2 className="text-xl font-bold text-gray-900 dark:text-white truncate">
+                        Tóm tắt của "{sourceName}"
+                    </h2>
+                    <button onClick={onClose} className="p-1 rounded-full text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700">
+                        <XMarkIcon />
+                    </button>
+                </div>
+                <div className="overflow-y-auto pr-2">
+                    {isLoading ? (
+                        <div className="flex flex-col items-center justify-center h-48 text-gray-500">
+                            <SpinnerIcon />
+                            <p className="mt-3">Đang tạo tóm tắt...</p>
+                        </div>
+                    ) : (
+                        <p className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                            {content}
+                        </p>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+function App() {
+  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [mobileSourcesVisible, setMobileSourcesVisible] = useState(false);
+  const [mobileViewerVisible, setMobileViewerVisible] = useState(false);
+  const [isViewerVisible, setIsViewerVisible] = useState(false);
+  const [summaryState, setSummaryState] = useState<{
+        isOpen: boolean;
+        isLoading: boolean;
+        content: string;
+        sourceName: string;
+    }>({
+        isOpen: false,
+        isLoading: false,
+        content: '',
+        sourceName: '',
+    });
+
+  // --- State Persistence ---
+  useEffect(() => {
+    try {
+      const savedState = localStorage.getItem(APP_STORAGE_KEY);
+      if (savedState) {
+        const { notebooks: savedNotebooks, activeNotebookId: savedActiveId } = JSON.parse(savedState);
+        setNotebooks(savedNotebooks || []);
+        setActiveNotebookId(savedActiveId || null);
+      }
+    } catch (e) {
+      console.error("Failed to load state from localStorage", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const sanitizedNotebooks = getSanitizedNotebooksForStorage(notebooks);
+      const stateToSave = JSON.stringify({ notebooks: sanitizedNotebooks, activeNotebookId });
+      localStorage.setItem(APP_STORAGE_KEY, stateToSave);
+    } catch (e) {
+      console.error("Failed to save state to localStorage", e);
+    }
+  }, [notebooks, activeNotebookId]);
+
+  // --- Derived State ---
+  const activeNotebook = notebooks.find(n => n.id === activeNotebookId) || null;
+  const sources = activeNotebook?.sources || [];
+  const chatHistory = activeNotebook?.chatHistory || [];
+  const selectedSource = sources.find(s => s.id === selectedSourceId) || null;
+
+  // --- Notebook Management ---
+  const handleNewNotebook = useCallback(async (files: FileList) => {
+    const tempNotebookId = `notebook-${Date.now()}`;
+    const filesArray = Array.from(files);
+    
+    const newSources: Source[] = filesArray.map(file => ({
+        id: `source-${Date.now()}-${file.name}`,
+        name: file.name,
+        originalType: file.type || 'unknown',
+        status: 'processing',
+        progress: 0,
+        content: null,
+        groundingText: null
+    }));
+
+    const tempNotebook: Notebook = {
+      id: tempNotebookId,
+      name: 'Đang đặt tên sổ ghi chú...',
+      sources: newSources,
+      chatHistory: [],
+      studioHistory: [],
+    };
+
+    setNotebooks(prev => [tempNotebook, ...prev]);
+    setActiveNotebookId(tempNotebookId);
+    
+    const processedSources = await Promise.all(newSources.map(async (source): Promise<Source> => {
+        const file = filesArray.find(f => f.name === source.name)!;
+        try {
+            const { content, groundingText } = await extractTextAndContentFromFile(file, (progress) => {
+                setNotebooks(prev => prev.map(n => n.id === tempNotebookId ? { ...n, sources: n.sources.map(s => s.id === source.id ? { ...s, progress } : s) } : n));
+            });
+            return { ...source, status: 'ready', content, groundingText, progress: 100 };
+        } catch (e: any) {
+            return { ...source, status: 'error', error: e.message, progress: 100 };
+        }
+    }));
+
+    const finalSources = processedSources.filter(s => s.status === 'ready');
+    const groundingTexts = finalSources.map(s => s.groundingText || '');
+    const notebookName = await generateNotebookName(groundingTexts);
+    
+    const finalNotebook: Notebook = {
+        ...tempNotebook,
+        name: notebookName,
+        sources: processedSources,
+        chatHistory: [{ id: 'welcome', role: 'model', content: `Chào mừng đến với sổ ghi chú "${notebookName}"! Hãy bắt đầu bằng cách đặt câu hỏi về các nguồn của bạn.` }]
+    };
+
+    setNotebooks(prev => prev.map(n => n.id === tempNotebookId ? finalNotebook : n));
+    if (finalSources.length > 0) {
+      setSelectedSourceId(finalSources[0].id);
+      setIsViewerVisible(true);
+    }
+  }, []);
+
+  const handleSelectNotebook = useCallback((id: string) => {
+    setActiveNotebookId(id);
+    setSelectedSourceId(null);
+    setIsViewerVisible(false);
+  }, []);
+
+  const handleDeleteNotebook = useCallback((id: string) => {
+    setNotebooks(prev => prev.filter(n => n.id !== id));
+    if (activeNotebookId === id) {
+      setActiveNotebookId(notebooks.length > 1 ? notebooks.filter(n => n.id !== id)[0].id : null);
+      setSelectedSourceId(null);
+      setIsViewerVisible(false);
+    }
+  }, [activeNotebookId, notebooks]);
+
+  const updateActiveNotebook = (updater: (notebook: Notebook) => Notebook) => {
+    if (!activeNotebookId) return;
+    setNotebooks(notebooks.map(n => n.id === activeNotebookId ? updater(n) : n));
+  };
+
+
+  // --- Source Management ---
+  const handleAddSources = useCallback(async (files: FileList) => {
+    if (!activeNotebookId) return;
+    
+    const filesArray = Array.from(files);
+    const newSources: Source[] = filesArray.map(file => ({
+        id: `source-${Date.now()}-${file.name}`, name: file.name, originalType: file.type,
+        status: 'processing', progress: 0, content: null, groundingText: null
+    }));
+    
+    updateActiveNotebook(n => ({ ...n, sources: [...n.sources, ...newSources] }));
+
+    newSources.forEach(async (source) => {
+        const file = filesArray.find(f => f.name === source.name)!;
+        try {
+            const { content, groundingText } = await extractTextAndContentFromFile(file, p => {
+                updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === source.id ? { ...s, progress: p } : s) }));
+            });
+            updateActiveNotebook(n => ({...n, sources: n.sources.map(s => s.id === source.id ? {...s, status: 'ready', content, groundingText, progress: 100} : s)}));
+        } catch (e: any) {
+            updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === source.id ? {...s, status: 'error', error: e.message, progress: 100 } : s) }));
+        }
+    });
+  }, [activeNotebookId, notebooks]);
+
+  const handleAddWebSource = useCallback(async (url: string) => {
+     if (!activeNotebookId) return;
+     // The rest of the logic is similar to handleAddSources, creating a source and updating it.
+  }, [activeNotebookId]);
+  
+  const handleDeleteSource = useCallback((id: string) => {
+    updateActiveNotebook(n => ({ ...n, sources: n.sources.filter(s => s.id !== id) }));
+    if (selectedSourceId === id) {
+      setSelectedSourceId(null);
+      setIsViewerVisible(false);
+    }
+  }, [selectedSourceId, activeNotebookId]);
+
+  const handleUpdateSource = useCallback((id: string, newName: string) => {
+    updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === id ? { ...s, name: newName } : s) }));
+  }, [activeNotebookId]);
+
+  // --- Other Handlers ---
+  const handleSelectSource = useCallback((source: Source) => {
+    setSelectedSourceId(source.id);
+    setIsViewerVisible(true);
+    if (window.innerWidth < 768) setMobileViewerVisible(true);
+  }, []);
+
+  const handleSendMessage = useCallback(async (message: string) => {
+    if (!activeNotebook || !sources.some(s => s.status === 'ready')) return;
+
+    const userMessage: ChatMessage = { id: `msg-${Date.now()}`, role: 'user', content: message };
+    updateActiveNotebook(n => ({ ...n, chatHistory: [...n.chatHistory, userMessage] }));
+    setIsLoading(true);
+    
+    try {
+      const responseText = await generateGroundedResponse(sources, message);
+      const modelMessage: ChatMessage = { id: `msg-${Date.now() + 1}`, role: 'model', content: responseText };
+      updateActiveNotebook(n => ({...n, chatHistory: [...n.chatHistory, modelMessage]}));
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred.";
+      const errorResponseMessage: ChatMessage = { id: `msg-err-${Date.now()}`, role: 'model', content: `Error: ${errorMessage}` };
+      updateActiveNotebook(n => ({...n, chatHistory: [...n.chatHistory, errorResponseMessage]}));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [activeNotebook, sources]);
+  
+  const handleSummarizeSource = useCallback(async (source: Source) => {
+    if (!source.groundingText) {
+        console.error("Source has no text to summarize.");
+        return;
+    }
+
+    setSummaryState({
+        isOpen: true,
+        isLoading: true,
+        content: '',
+        sourceName: source.name,
+    });
+
+    try {
+        const summary = await summarizeSourceContent(source.groundingText);
+        setSummaryState(prev => ({ ...prev, isLoading: false, content: summary }));
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
+        setSummaryState(prev => ({ ...prev, isLoading: false, content: `Lỗi khi tạo tóm tắt: ${errorMessage}` }));
+    }
+  }, []);
+
+  // --- Studio Handlers ---
+  const handleGenerateMindMap = useCallback(async (notebookId: string): Promise<string> => {
+    const notebook = notebooks.find(n => n.id === notebookId);
+    if (!notebook) return "Không tìm thấy sổ ghi chú.";
+    
+    const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
+    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+
+    const id = `hist-mindmap-${Date.now()}`;
+    const newItem: StudioHistoryItem = {
+        id, type: 'mindmap', status: 'loading', name: 'Bản đồ tư duy',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sourceCount: readySources.length,
+    };
+    
+    setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: [newItem, ...(n.studioHistory || [])] } : n));
+
+    try {
+        const mindMapJson = await generateMindMap(readySources);
+        openMindMapInNewTab(mindMapJson);
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'completed', data: mindMapJson, name: mindMapJson.label || item.name } : item) } : n));
+        return `Đã tạo và mở bản đồ tư duy cho sổ ghi chú "${notebook.name}".`;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
+        return `Không thể tạo bản đồ tư duy: ${errorMessage}`;
+    }
+  }, [notebooks]);
+
+  const handleGenerateAudioSummary = useCallback(async (notebookId: string): Promise<string> => {
+    const notebook = notebooks.find(n => n.id === notebookId);
+    if (!notebook) return "Không tìm thấy sổ ghi chú.";
+    const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
+    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+
+    const id = `hist-audio-${Date.now()}`;
+    const newItem: StudioHistoryItem = {
+        id, type: 'audio', status: 'loading', name: 'Tổng quan bằng âm thanh',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sourceCount: readySources.length,
+    };
+    setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: [newItem, ...(n.studioHistory || [])] } : n));
+
+    try {
+        const base64Audio = await generateAudioSummary(readySources);
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'completed', data: base64Audio } : item) } : n));
+        return `Đã tạo tóm tắt âm thanh cho sổ ghi chú "${notebook.name}". Bạn có thể tìm thấy nó trong bảng Studio.`;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
+        return `Không thể tạo tóm tắt âm thanh: ${errorMessage}`;
+    }
+  }, [notebooks]);
+
+  // --- AI Assistant Handlers ---
+  const handleAIOpenNotebook = useCallback((notebookName: string): string => {
+      const notebook = notebooks.find(n => n.name.toLowerCase().trim() === notebookName.toLowerCase().trim());
+      if (notebook) {
+          handleSelectNotebook(notebook.id);
+          return `Đã mở sổ ghi chú "${notebook.name}".`;
+      }
+      return `Không tìm thấy sổ ghi chú nào có tên "${notebookName}".`;
+  }, [notebooks, handleSelectNotebook]);
+
+  const handleAICreateMindMap = useCallback((notebookName: string): Promise<string> => {
+      const notebook = notebooks.find(n => n.name.toLowerCase().trim() === notebookName.toLowerCase().trim());
+      if (notebook) {
+          return handleGenerateMindMap(notebook.id);
+      }
+      return Promise.resolve(`Không tìm thấy sổ ghi chú nào có tên "${notebookName}" để tạo bản đồ tư duy.`);
+  }, [notebooks, handleGenerateMindMap]);
+
+  const handleAICreateAudioSummary = useCallback((notebookName: string): Promise<string> => {
+      const notebook = notebooks.find(n => n.name.toLowerCase().trim() === notebookName.toLowerCase().trim());
+      if (notebook) {
+          return handleGenerateAudioSummary(notebook.id);
+      }
+      return Promise.resolve(`Không tìm thấy sổ ghi chú nào có tên "${notebookName}" để tạo tóm tắt âm thanh.`);
+  }, [notebooks, handleGenerateAudioSummary]);
+  
+  const handleAIAnswerFromSources = useCallback(async (question: string, notebookName?: string): Promise<string> => {
+      let sourcesToSearch: Source[] = [];
+      if (notebookName) {
+          const notebook = notebooks.find(n => n.name.toLowerCase().trim() === notebookName.toLowerCase().trim());
+          if (!notebook) {
+              return `Không tìm thấy sổ ghi chú nào có tên "${notebookName}".`;
+          }
+          sourcesToSearch = notebook.sources;
+      } else {
+          sourcesToSearch = notebooks.flatMap(n => n.sources);
+      }
+
+      const readySources = sourcesToSearch.filter(s => s.status === 'ready' && s.groundingText);
+      if (readySources.length === 0) {
+          return "Không có nguồn nào sẵn sàng để tìm kiếm thông tin.";
+      }
+      return await generateGroundedResponse(readySources, question);
+  }, [notebooks]);
+
+
+  const thirdColumn = () => {
+    if (isViewerVisible) {
+      return <SourceViewer 
+        source={selectedSource} 
+        onClose={() => setIsViewerVisible(false)} 
+        mobileViewerVisible={mobileViewerVisible} 
+        setMobileViewerVisible={setMobileViewerVisible}
+        onSummarize={handleSummarizeSource}
+        isSummarizing={summaryState.isLoading && summaryState.sourceName === selectedSource?.name}
+      />;
+    }
+    return <StudioPanel 
+      sources={sources} 
+      history={activeNotebook?.studioHistory || []}
+      onGenerateMindMap={() => activeNotebookId && handleGenerateMindMap(activeNotebookId)}
+      onGenerateAudioSummary={() => activeNotebookId && handleGenerateAudioSummary(activeNotebookId)}
+      onOpenMindMap={openMindMapInNewTab}
+    />;
+  };
+
+  return (
+    <div className="flex h-screen overflow-hidden font-sans text-gray-900 dark:text-gray-100 bg-gray-100 dark:bg-gray-900">
+      <Sidebar 
+        notebooks={notebooks}
+        activeNotebookId={activeNotebookId}
+        onSelectNotebook={handleSelectNotebook}
+        onNewNotebook={handleNewNotebook}
+        onDeleteNotebook={handleDeleteNotebook}
+        sources={sources}
+        onUpdateSource={handleUpdateSource}
+        onSelectSource={handleSelectSource}
+        selectedSource={selectedSource}
+        onAddFiles={handleAddSources}
+        onAddWebSource={handleAddWebSource}
+        onDeleteSource={handleDeleteSource}
+        mobileSourcesVisible={mobileSourcesVisible}
+        setMobileSourcesVisible={setMobileSourcesVisible}
+      />
+      <main className="flex-1 flex flex-row min-w-0">
+        <ChatPanel
+          messages={chatHistory}
+          onSendMessage={handleSendMessage}
+          isLoading={isLoading}
+          onSelectSource={handleSelectSource}
+          sources={sources}
+          activeNotebook={activeNotebook}
+          setMobileSourcesVisible={setMobileSourcesVisible}
+          setMobileViewerVisible={setMobileViewerVisible}
+          selectedSource={selectedSource}
+        />
+        {thirdColumn()}
+      </main>
+      <Assistant 
+        notebooks={notebooks}
+        onOpenNotebook={handleAIOpenNotebook}
+        onCreateMindMap={handleAICreateMindMap}
+        onCreateAudioSummary={handleAICreateAudioSummary}
+        onAnswerQuestion={handleAIAnswerFromSources}
+      />
+       <SummaryModal
+            isOpen={summaryState.isOpen}
+            isLoading={summaryState.isLoading}
+            content={summaryState.content}
+            sourceName={summaryState.sourceName}
+            onClose={() => setSummaryState({ isOpen: false, isLoading: false, content: '', sourceName: '' })}
+        />
+    </div>
+  );
+}
+
+export default App;

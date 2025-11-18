@@ -1,0 +1,7 @@
+{
+  "name": "Vr_2.0_NotebookLM Clone",
+  "description": "An application that mimics Google's NotebookLM, allowing users to upload sources and ask questions about them. The AI provides answers grounded in the provided documents with citations.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
