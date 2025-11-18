@@ -4,8 +4,10 @@ import type { Source, SourceContent } from '../types';
 declare const pdfjsLib: any;
 declare const XLSX: any;
 
+// FIX: The API key must be obtained from process.env.API_KEY as per the guidelines,
+// which also resolves the TypeScript error for 'import.meta.env'.
 if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable is not set");
+    throw new Error("API_KEY environment variable is not set. Please ensure it is configured in your environment.");
 }
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });

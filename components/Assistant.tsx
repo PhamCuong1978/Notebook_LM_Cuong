@@ -52,6 +52,8 @@ export const Assistant: React.FC<AssistantProps> = ({
     const [isSpeechSupported, setIsSpeechSupported] = useState(false);
 
     useEffect(() => {
+        // FIX: The API key must be obtained from process.env.API_KEY as per the guidelines,
+        // which also resolves the TypeScript error for 'import.meta.env'.
         if (!process.env.API_KEY) {
             console.error("API_KEY environment variable is not set");
             return;
