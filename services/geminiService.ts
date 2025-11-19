@@ -4,13 +4,14 @@ import type { Source, SourceContent } from '../types';
 declare const pdfjsLib: any;
 declare const XLSX: any;
 
-// FIX: The API key must be obtained from process.env.API_KEY as per the guidelines,
-// which also resolves the TypeScript error for 'import.meta.env'.
-if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable is not set. Please ensure it is configured in your environment.");
+// Use process.env.API_KEY exclusively as per guidelines.
+const apiKey = process.env.API_KEY;
+
+if (!apiKey) {
+  console.error("API Key is missing. Please check your .env file.");
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: apiKey || '' });
 const model = 'gemini-2.5-pro';
 const flashModel = 'gemini-2.5-flash';
 
@@ -291,9 +292,6 @@ export async function generateMindMap(sources: Source[]): Promise<any> {
     `;
     
     try {
-// FIX: The recursive schema definition has been removed because it uses '$ref' and '$defs', 
-// which are not documented as supported in the provided guidelines. 
-// The model will rely on the prompt and 'responseMimeType: "application/json"'.
         const result = await ai.models.generateContent({
             model: model,
             contents: prompt,
@@ -407,6 +405,10 @@ export async function summarizeSourceContent(groundingText: string): Promise<str
         const result = await ai.models.generateContent({
             model: model,
             contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: null as any, // Explicitly null to avoid type issues if strict mode
+            }
         });
         return result.text;
     } catch (error) {

@@ -52,19 +52,20 @@ export const Assistant: React.FC<AssistantProps> = ({
     const [isSpeechSupported, setIsSpeechSupported] = useState(false);
 
     useEffect(() => {
-        // FIX: The API key must be obtained from process.env.API_KEY as per the guidelines,
-        // which also resolves the TypeScript error for 'import.meta.env'.
-        if (!process.env.API_KEY) {
-            console.error("API_KEY environment variable is not set");
-            return;
+        // Use process.env.API_KEY as per guidelines.
+        const apiKey = process.env.API_KEY;
+        
+        if (apiKey) {
+            const ai = new GoogleGenAI({ apiKey: apiKey });
+            chatRef.current = ai.chats.create({
+            model: 'gemini-2.5-pro',
+            config: {
+                tools: [{ functionDeclarations: aiTools }],
+            },
+            });
+        } else {
+            console.error("API_KEY is missing in Assistant component.");
         }
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        chatRef.current = ai.chats.create({
-          model: 'gemini-2.5-pro',
-          config: {
-            tools: [{ functionDeclarations: aiTools }],
-          },
-        });
 
         setMessages([{ role: 'model', content: 'Xin chào, tôi là Trợ lý AI của Anh Cường. Tôi có thể giúp gì cho bạn?'}]);
 
