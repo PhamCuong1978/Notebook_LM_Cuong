@@ -4,14 +4,7 @@ import type { Source, SourceContent } from '../types';
 declare const pdfjsLib: any;
 declare const XLSX: any;
 
-// Use process.env.API_KEY exclusively as per guidelines.
-const apiKey = process.env.API_KEY;
-
-if (!apiKey) {
-  console.error("API Key is missing. Please check your .env file.");
-}
-
-const ai = new GoogleGenAI({ apiKey: apiKey || '' });
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 const model = 'gemini-2.5-pro';
 const flashModel = 'gemini-2.5-flash';
 
