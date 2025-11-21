@@ -4,9 +4,14 @@ import type { Source, SourceContent } from '../types';
 declare const pdfjsLib: any;
 declare const XLSX: any;
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-const model = 'gemini-3-pro-preview';
-const flashModel = 'gemini-2.5-flash';
+// Log warning if API key is missing (helps debugging in Vercel logs)
+if (!process.env.API_KEY) {
+    console.error("CRITICAL ERROR: process.env.API_KEY is missing or empty. Please check your Vercel Environment Variables (VITE_API_KEY) and redeploy.");
+}
+
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Switching to flash for better stability and availability on standard tiers
+const model = 'gemini-2.5-flash'; 
 
 // --- Helper Functions ---
 
@@ -254,9 +259,13 @@ User's Question: ${question}
             contents: prompt,
         });
         return response.text;
-    } catch (error) {
+    } catch (error: any) {
         console.error("Error generating response from Gemini API:", error);
-        return "Sorry, I encountered an error while processing your request. Please check the console for details.";
+        // Provide clearer error to the UI
+        if (error.message?.includes('API key')) {
+             return "Lỗi: Không tìm thấy API Key. Vui lòng kiểm tra cài đặt Environment Variable trên Vercel.";
+        }
+        return `Xin lỗi, đã có lỗi xảy ra: ${error.message || 'Lỗi không xác định'}`;
     }
 }
 
@@ -294,9 +303,9 @@ export async function generateMindMap(sources: Source[]): Promise<any> {
         });
         const jsonText = result.text.trim();
         return JSON.parse(jsonText);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Error generating mind map from Gemini API:", error);
-        throw new Error("The AI model failed to generate the mind map JSON.");
+        throw new Error(error.message || "The AI model failed to generate the mind map JSON.");
     }
 }
 
@@ -321,33 +330,38 @@ export async function generateAudioSummary(sources: Source[]): Promise<string> {
         --- END OF SOURCES ---
     `;
     
-    const summaryResponse = await ai.models.generateContent({
-        model: model,
-        contents: summaryPrompt,
-    });
-    const summaryText = summaryResponse.text;
+    try {
+        const summaryResponse = await ai.models.generateContent({
+            model: model,
+            contents: summaryPrompt,
+        });
+        const summaryText = summaryResponse.text;
 
-    // Step 2: Convert the summary text to speech
-    const ttsResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: summaryText }] }],
-        config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: {
-                voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: 'Kore' },
+        // Step 2: Convert the summary text to speech
+        const ttsResponse = await ai.models.generateContent({
+            model: "gemini-2.5-flash-preview-tts",
+            contents: [{ parts: [{ text: summaryText }] }],
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: 'Kore' },
+                    },
                 },
             },
-        },
-    });
+        });
 
-    const audioData = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        const audioData = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 
-    if (!audioData) {
-        throw new Error("The AI model failed to generate audio for the summary.");
+        if (!audioData) {
+            throw new Error("The AI model failed to generate audio for the summary.");
+        }
+
+        return audioData;
+    } catch (error: any) {
+        console.error("Error generating audio summary:", error);
+        throw new Error(error.message || "Failed to generate audio summary.");
     }
-
-    return audioData;
 }
 
 export async function generateNotebookName(groundingTexts: string[]): Promise<string> {
@@ -404,8 +418,8 @@ export async function summarizeSourceContent(groundingText: string): Promise<str
             }
         });
         return result.text;
-    } catch (error) {
+    } catch (error: any) {
         console.error("Error generating summary from Gemini API:", error);
-        throw new Error("The AI model failed to generate the summary.");
+        throw new Error(error.message || "The AI model failed to generate the summary.");
     }
 }

@@ -52,9 +52,9 @@ export const Assistant: React.FC<AssistantProps> = ({
     const [isSpeechSupported, setIsSpeechSupported] = useState(false);
 
     useEffect(() => {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
         chatRef.current = ai.chats.create({
-          model: 'gemini-3-pro-preview',
+          model: 'gemini-2.5-flash',
           config: {
               tools: [{ functionDeclarations: aiTools }],
           },
@@ -172,10 +172,13 @@ export const Assistant: React.FC<AssistantProps> = ({
             const modelMessage: AssistantMessage = { role: 'model', content: response.text };
             setMessages(prev => [...prev, modelMessage]);
 
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error sending message to Gemini:", error);
-            const errorMessage: AssistantMessage = { role: 'model', content: "Xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại." };
-            setMessages(prev => [...prev, errorMessage]);
+            let errorMessage = "Xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại.";
+            if (error.message && error.message.includes('API key')) {
+                errorMessage = "Lỗi cấu hình: Thiếu API Key trên Vercel.";
+            }
+            setMessages(prev => [...prev, { role: 'model', content: errorMessage }]);
         } finally {
             setIsLoading(false);
         }
@@ -281,4 +284,4 @@ export const Assistant: React.FC<AssistantProps> = ({
             </div>
         </>
     );
-};
+}
