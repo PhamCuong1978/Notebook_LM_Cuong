@@ -5,7 +5,7 @@ declare const pdfjsLib: any;
 declare const XLSX: any;
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-const model = 'gemini-2.5-pro';
+const model = 'gemini-3-pro-preview';
 const flashModel = 'gemini-2.5-flash';
 
 // --- Helper Functions ---

@@ -54,7 +54,7 @@ export const Assistant: React.FC<AssistantProps> = ({
     useEffect(() => {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         chatRef.current = ai.chats.create({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-3-pro-preview',
           config: {
               tools: [{ functionDeclarations: aiTools }],
           },
@@ -165,7 +165,7 @@ export const Assistant: React.FC<AssistantProps> = ({
                 );
                 
                 response = await chat.sendMessage({
-                  functionResponses: functionResponses
+                  message: functionResponses.map(fr => ({ functionResponse: fr }))
                 });
             }
 
