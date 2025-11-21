@@ -217,9 +217,12 @@ export const Sidebar: React.FC<SidebarProps> = (props) => {
                 <NotebookIcon />
                 <h1>Sổ ghi chú</h1>
             </div>
-            <button onClick={() => setMobileSourcesVisible(false)} className="md:hidden p-1 text-gray-500 dark:text-gray-400">
-                <XMarkIcon />
-            </button>
+            <div className="flex items-center">
+                 <span className="text-xs font-light text-gray-500 dark:text-gray-400">Version 2.0</span>
+                 <button onClick={() => setMobileSourcesVisible(false)} className="md:hidden p-1 text-gray-500 dark:text-gray-400 ml-2">
+                    <XMarkIcon />
+                </button>
+            </div>
         </div>
         
         {/* Notebook Management */}

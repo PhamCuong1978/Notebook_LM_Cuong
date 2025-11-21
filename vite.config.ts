@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
   // Load environment variables based on the current mode (development/production)
   // The third argument '' loads all variables, but we specifically look for VITE_API_KEY
-  const env = loadEnv(mode, process.cwd(), '');
+  const env = loadEnv(mode, (process as any).cwd(), '');
 
   return {
     plugins: [react()],
