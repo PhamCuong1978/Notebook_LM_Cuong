@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import type { Source, SourceContent } from '../types';
 
@@ -364,6 +365,67 @@ export async function generateAudioSummary(sources: Source[]): Promise<string> {
     }
 }
 
+export async function generateFinancialReport(sources: Source[]): Promise<string> {
+    const sourcePreamble = sources
+        .filter(s => s.status === 'ready' && s.groundingText)
+        .map((source, index) => `--- SOURCE ${index + 1}: ${source.name} ---\n${source.groundingText}`)
+        .join('\n\n');
+
+    if (!sourcePreamble) {
+        throw new Error("No valid sources provided for financial report generation.");
+    }
+
+    const prompt = `
+    You are a professional financial analyst. Your task is to compile a "Báo cáo Tổng hợp" (Financial Summary Report) in Vietnamese based on the provided source documents.
+    
+    The sources may include:
+    - Financial Statements (Báo cáo tài chính)
+    - Business Registration (Đăng ký kinh doanh)
+    - VAT Declarations (Tờ khai thuế GTGT)
+    - Other related documents.
+
+    Your report must be a comprehensive HTML document with inline CSS for styling. It should look professional, like a real printed report.
+
+    Structure the report with the following sections if data is available:
+    1.  **Thông tin chung (General Information):** Extract Company Name, Tax Code (Mã số thuế), Address, Legal Representative, Charter Capital, etc. from Business Registration or other docs.
+    2.  **Tình hình tài chính (Financial Status):** Summarize key figures from the Balance Sheet (Total Assets, Liabilities, Equity) across available years. Present this in a clean HTML table.
+    3.  **Kết quả kinh doanh (Business Results):** Summarize Revenue, Costs, and Profit/Loss from the P&L statement. Present in a table comparing years.
+    4.  **Thông tin về Thuế (Tax Information):** Summarize VAT, CIT details if available from tax declarations.
+    5.  **Nhận xét chung (Summary/Observations):** A brief professional summary of the company's financial health based on the data.
+
+    **Requirements:**
+    - Output MUST be valid HTML code only. Do not wrap in markdown code blocks (like \`\`\`html).
+    - Use a clean, modern design with a white background, readable fonts (Arial/sans-serif), and distinct section headers.
+    - Use tables for numerical data.
+    - If specific data is missing from the sources, state "Không có dữ liệu trong tài liệu nguồn" for that section or field.
+    - Language: Vietnamese.
+
+    Here are the sources:
+    ${sourcePreamble}
+    --- END OF SOURCES ---
+    `;
+
+    try {
+        const result = await ai.models.generateContent({
+            model: model,
+            contents: prompt,
+        });
+        
+        let htmlContent = result.text.trim();
+        // Cleanup if the model wraps it in markdown despite instructions
+        if (htmlContent.startsWith("```html")) {
+            htmlContent = htmlContent.replace(/^```html/, "").replace(/```$/, "");
+        } else if (htmlContent.startsWith("```")) {
+            htmlContent = htmlContent.replace(/^```/, "").replace(/```$/, "");
+        }
+
+        return htmlContent;
+    } catch (error: any) {
+        console.error("Error generating financial report:", error);
+        throw new Error(error.message || "The AI model failed to generate the financial report.");
+    }
+}
+
 export async function generateNotebookName(groundingTexts: string[]): Promise<string> {
     if (groundingTexts.length === 0) {
         return "Sổ ghi chú mới";
@@ -421,5 +483,116 @@ export async function summarizeSourceContent(groundingText: string): Promise<str
     } catch (error: any) {
         console.error("Error generating summary from Gemini API:", error);
         throw new Error(error.message || "The AI model failed to generate the summary.");
+    }
+}
+
+export async function generateFlashcards(sources: Source[]): Promise<any> {
+    const sourcePreamble = sources
+        .filter(s => s.status === 'ready' && s.groundingText)
+        .map((source, index) => `--- SOURCE ${index + 1}: ${source.name} ---\n${source.groundingText}`)
+        .join('\n\n');
+
+    if (!sourcePreamble) {
+        throw new Error("No valid sources provided for flashcards generation.");
+    }
+
+    const prompt = `
+    Create a set of 8-12 flashcards based on the key concepts from the provided sources.
+    Each flashcard must have a 'front' (term or question) and a 'back' (definition or answer).
+    Language: Vietnamese.
+    Respond with a JSON object containing a "flashcards" array.
+
+    Here are the sources:
+    ${sourcePreamble}
+    --- END OF SOURCES ---
+    `;
+
+    try {
+        const result = await ai.models.generateContent({
+            model: model,
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        flashcards: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    front: { type: Type.STRING },
+                                    back: { type: Type.STRING }
+                                },
+                                required: ["front", "back"]
+                            }
+                        }
+                    },
+                    required: ["flashcards"]
+                }
+            }
+        });
+        const jsonText = result.text.trim();
+        return JSON.parse(jsonText);
+    } catch (error: any) {
+        console.error("Error generating flashcards:", error);
+        throw new Error(error.message || "Failed to generate flashcards.");
+    }
+}
+
+export async function generateQuiz(sources: Source[]): Promise<any> {
+    const sourcePreamble = sources
+        .filter(s => s.status === 'ready' && s.groundingText)
+        .map((source, index) => `--- SOURCE ${index + 1}: ${source.name} ---\n${source.groundingText}`)
+        .join('\n\n');
+
+    if (!sourcePreamble) {
+        throw new Error("No valid sources provided for quiz generation.");
+    }
+
+    const prompt = `
+    Create a multiple-choice quiz with 5-10 questions based on the provided sources.
+    Each question should have 4 options and 1 correct answer.
+    Provide an explanation for the correct answer.
+    Language: Vietnamese.
+    Respond with a JSON object containing a "questions" array.
+
+    Here are the sources:
+    ${sourcePreamble}
+    --- END OF SOURCES ---
+    `;
+
+    try {
+        const result = await ai.models.generateContent({
+            model: model,
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        questions: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    question: { type: Type.STRING },
+                                    options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                    correctAnswerIndex: { type: Type.INTEGER },
+                                    explanation: { type: Type.STRING }
+                                },
+                                required: ["question", "options", "correctAnswerIndex", "explanation"]
+                            }
+                        }
+                    },
+                    required: ["questions"]
+                }
+            }
+        });
+        const jsonText = result.text.trim();
+        return JSON.parse(jsonText);
+    } catch (error: any) {
+        console.error("Error generating quiz:", error);
+        throw new Error(error.message || "Failed to generate quiz.");
     }
 }

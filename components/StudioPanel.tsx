@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { 
     SpeakerWaveIcon, 
@@ -10,7 +11,8 @@ import {
     PlayIcon,
     PauseIcon,
     ArrowDownTrayIcon,
-    ExclamationTriangleIcon
+    ExclamationTriangleIcon,
+    DocumentTextIcon
 } from './Icons';
 import type { Source, StudioHistoryItem } from '../types';
 
@@ -73,12 +75,17 @@ const StudioButton: React.FC<{
 
 const HistoryItemCard: React.FC<{
     item: StudioHistoryItem;
-    onMindMapClick: (data: any) => void;
+    onItemClick: (item: StudioHistoryItem) => void;
     onPlayPause: (item: StudioHistoryItem) => void;
     onDownload: (item: StudioHistoryItem) => void;
     isPlaying: boolean;
-}> = ({ item, onMindMapClick, onPlayPause, onDownload, isPlaying }) => {
-    const icon = item.type === 'audio' ? <SpeakerWaveIcon /> : <ShareIcon />;
+}> = ({ item, onItemClick, onPlayPause, onDownload, isPlaying }) => {
+    let icon;
+    if (item.type === 'audio') icon = <SpeakerWaveIcon />;
+    else if (item.type === 'report') icon = <PresentationChartBarIcon />;
+    else if (item.type === 'flashcards') icon = <RectangleGroupIcon />;
+    else if (item.type === 'quiz') icon = <QuestionMarkCircleIcon />;
+    else icon = <ShareIcon />;
     
     const renderContent = () => {
         switch (item.status) {
@@ -100,24 +107,32 @@ const HistoryItemCard: React.FC<{
                 if (item.type === 'audio') {
                     return (
                         <div className="flex items-center space-x-2">
-                           <button onClick={() => onPlayPause(item)} className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600">
+                           <button onClick={(e) => { e.stopPropagation(); onPlayPause(item); }} className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600">
                                 {isPlaying ? <PauseIcon /> : <PlayIcon />}
                            </button>
-                           <button onClick={() => onDownload(item)} className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600">
+                           <button onClick={(e) => { e.stopPropagation(); onDownload(item); }} className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600">
                                 <ArrowDownTrayIcon />
                            </button>
                         </div>
                     );
+                } else if (item.type === 'report' || item.type === 'mindmap' || item.type === 'flashcards' || item.type === 'quiz') {
+                     return (
+                        <div className="flex items-center space-x-2">
+                             <button className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-1 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors">
+                                 Mở
+                             </button>
+                        </div>
+                     )
                 }
                 return null;
         }
     };
     
-    const isClickable = item.status === 'completed' && item.type === 'mindmap';
+    const isClickable = item.status === 'completed' && ['mindmap', 'report', 'flashcards', 'quiz'].includes(item.type);
 
     return (
         <div 
-            onClick={() => isClickable && onMindMapClick(item.data)}
+            onClick={() => isClickable && onItemClick(item)}
             className={`p-3 rounded-lg bg-gray-100 dark:bg-gray-700/50 ${isClickable ? 'cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700' : ''}`}
         >
             <div className="flex items-center justify-between">
@@ -130,7 +145,7 @@ const HistoryItemCard: React.FC<{
                         <p className="text-xs text-gray-500 dark:text-gray-400">{item.sourceCount} nguồn &middot; {item.timestamp}</p>
                     </div>
                 </div>
-                <div className="flex-shrink-0">{renderContent()}</div>
+                <div className="flex-shrink-0 ml-2">{renderContent()}</div>
             </div>
         </div>
     );
@@ -144,8 +159,18 @@ export const StudioPanel: React.FC<{
     history: StudioHistoryItem[];
     onGenerateMindMap: () => void;
     onGenerateAudioSummary: () => void;
+    onGenerateReport: () => void;
+    onGenerateFlashcards: () => void;
+    onGenerateQuiz: () => void;
     onOpenMindMap: (data: any) => void;
-}> = ({ sources, history, onGenerateMindMap, onGenerateAudioSummary, onOpenMindMap }) => {
+    onOpenReport: (htmlContent: string) => void;
+    onOpenFlashcards: (data: any) => void;
+    onOpenQuiz: (data: any) => void;
+}> = ({ 
+    sources, history, 
+    onGenerateMindMap, onGenerateAudioSummary, onGenerateReport, onGenerateFlashcards, onGenerateQuiz,
+    onOpenMindMap, onOpenReport, onOpenFlashcards, onOpenQuiz
+}) => {
     const [playingHistoryId, setPlayingHistoryId] = useState<string | null>(null);
     const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -180,6 +205,25 @@ export const StudioPanel: React.FC<{
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     };
+    
+    const handleItemClick = (item: StudioHistoryItem) => {
+        if (item.status !== 'completed') return;
+        
+        switch (item.type) {
+            case 'mindmap':
+                onOpenMindMap(item.data);
+                break;
+            case 'report':
+                onOpenReport(item.data);
+                break;
+            case 'flashcards':
+                onOpenFlashcards(item.data);
+                break;
+            case 'quiz':
+                onOpenQuiz(item.data);
+                break;
+        }
+    };
 
     useEffect(() => {
         const audio = audioRef.current;
@@ -204,13 +248,20 @@ export const StudioPanel: React.FC<{
             <StudioButton icon={<SpeakerWaveIcon />} label={"Tổng quan bằng âm thanh"} onClick={onGenerateAudioSummary} disabled={isGenerating || !hasReadySources} />
             <StudioButton icon={<VideoCameraIcon />} label="Tổng quan bằng video" disabled={true} />
             <StudioButton icon={<ShareIcon />} label={"Bản đồ tư duy"} onClick={onGenerateMindMap} disabled={isGenerating || !hasReadySources} />
-            <StudioButton icon={<PresentationChartBarIcon />} label="Báo cáo" disabled={true}/>
-            <StudioButton icon={<RectangleGroupIcon />} label="Thẻ ghi nhớ" disabled={true}/>
-            <StudioButton icon={<QuestionMarkCircleIcon />} label="Kiểm tra" disabled={true}/>
+            <StudioButton icon={<PresentationChartBarIcon />} label="Báo cáo" onClick={onGenerateReport} disabled={isGenerating || !hasReadySources}/>
+            <StudioButton icon={<RectangleGroupIcon />} label="Thẻ ghi nhớ" onClick={onGenerateFlashcards} disabled={isGenerating || !hasReadySources}/>
+            <StudioButton icon={<QuestionMarkCircleIcon />} label="Kiểm tra" onClick={onGenerateQuiz} disabled={isGenerating || !hasReadySources}/>
           </div>
           <div className="flex-1 overflow-y-auto space-y-2">
             {(Array.isArray(history) ? history : []).map(item => (
-                <HistoryItemCard key={item.id} item={item} onMindMapClick={onOpenMindMap} onPlayPause={handlePlayPauseAudio} onDownload={handleDownloadAudio} isPlaying={playingHistoryId === item.id} />
+                <HistoryItemCard 
+                    key={item.id} 
+                    item={item} 
+                    onItemClick={handleItemClick}
+                    onPlayPause={handlePlayPauseAudio} 
+                    onDownload={handleDownloadAudio} 
+                    isPlaying={playingHistoryId === item.id} 
+                />
             ))}
           </div>
         </>

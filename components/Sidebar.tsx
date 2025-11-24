@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import type { Source, Notebook } from '../types';
 import { BookOpenIcon, PencilIcon, DocumentArrowUpIcon, SpinnerIcon, PhotoIcon, DocumentTextIcon, DocumentIcon, TableCellsIcon, SpeakerWaveIcon, VideoCameraIcon, XMarkIcon, GlobeAltIcon, YoutubeIcon, TrashIcon, ArrowPathIcon, ChevronDownIcon, PlusCircleIcon, NotebookIcon } from './Icons';
@@ -8,6 +9,7 @@ interface SidebarProps {
   onSelectNotebook: (id: string) => void;
   onNewNotebook: (files: FileList) => void;
   onDeleteNotebook: (id: string) => void;
+  onRenameNotebook: (id: string, newName: string) => void;
   
   sources: Source[]; // Sources of the active notebook
   onUpdateSource: (id: string, name: string) => void;
@@ -66,6 +68,7 @@ const AddWebSourceModal: React.FC<{
   const handleAdd = () => {
     if (isValid) {
       onAdd(url.trim());
+      onClose();
     }
   };
 
@@ -87,6 +90,46 @@ const AddWebSourceModal: React.FC<{
         <div className="flex justify-end space-x-2 mt-4">
           <button onClick={onClose} className="px-4 py-2 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">Hủy</button>
           <button onClick={handleAdd} className="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed" disabled={!isValid}>Thêm Nguồn</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const EditNotebookModal: React.FC<{
+  notebookName: string;
+  onClose: () => void;
+  onRename: (newName: string) => void;
+}> = ({ notebookName, onClose, onRename }) => {
+  const [name, setName] = useState(notebookName);
+
+  const handleRename = () => {
+    if (name.trim()) {
+      onRename(name.trim());
+      onClose();
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') handleRename();
+      if (e.key === 'Escape') onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
+        <h2 className="text-xl font-bold mb-4 text-gray-900 dark:text-white">Đổi tên sổ ghi chú</h2>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={handleKeyDown}
+          className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md mb-4 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white"
+          autoFocus
+        />
+        <div className="flex justify-end space-x-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">Hủy</button>
+          <button onClick={handleRename} className="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-300" disabled={!name.trim()}>Lưu</button>
         </div>
       </div>
     </div>
@@ -177,13 +220,14 @@ const NotebookSelector: React.FC<{
 
 export const Sidebar: React.FC<SidebarProps> = (props) => {
   const { 
-      notebooks, activeNotebookId, onSelectNotebook, onNewNotebook, onDeleteNotebook,
+      notebooks, activeNotebookId, onSelectNotebook, onNewNotebook, onDeleteNotebook, onRenameNotebook,
       sources, onUpdateSource, onSelectSource, selectedSource, onAddFiles, onAddWebSource, 
       onDeleteSource, mobileSourcesVisible, setMobileSourcesVisible
   } = props;
   
   const [editingSource, setEditingSource] = useState<Source | null>(null);
   const [isWebSourceModalOpen, setIsWebSourceModalOpen] = useState(false);
+  const [isRenamingNotebook, setIsRenamingNotebook] = useState(false);
   
   const newNotebookFileInputRef = useRef<HTMLInputElement>(null);
   const addSourceFileInputRef = useRef<HTMLInputElement>(null);
@@ -207,6 +251,7 @@ export const Sidebar: React.FC<SidebarProps> = (props) => {
       }
   };
 
+  const activeNotebook = notebooks.find(n => n.id === activeNotebookId);
   const acceptedFileTypes = ".json, .pdf, .png, .jpg, .jpeg, .txt, .doc, .docx, .xls, .xlsx, .mp3, .wav, .m4a, audio/*, .mp4, .mov, video/*";
 
   return (
@@ -217,11 +262,14 @@ export const Sidebar: React.FC<SidebarProps> = (props) => {
                 <NotebookIcon />
                 <h1>Sổ ghi chú</h1>
             </div>
-            <div className="flex items-center">
-                 <span className="text-xs font-light text-gray-500 dark:text-gray-400">Version 2.0</span>
-                 <button onClick={() => setMobileSourcesVisible(false)} className="md:hidden p-1 text-gray-500 dark:text-gray-400 ml-2">
-                    <XMarkIcon />
-                </button>
+            <div className="flex items-center justify-between flex-1 ml-2">
+                 <div className="flex-1"></div> {/* Spacer to push Version 2.0 to right */}
+                 <div className="flex items-center">
+                    <span className="text-xs font-light text-gray-500 dark:text-gray-400 whitespace-nowrap">Version 2.0</span>
+                    <button onClick={() => setMobileSourcesVisible(false)} className="md:hidden p-1 text-gray-500 dark:text-gray-400 ml-2">
+                        <XMarkIcon />
+                    </button>
+                 </div>
             </div>
         </div>
         
@@ -234,10 +282,13 @@ export const Sidebar: React.FC<SidebarProps> = (props) => {
             <input type="file" ref={newNotebookFileInputRef} onChange={handleNewNotebookFileChange} className="hidden" multiple accept={acceptedFileTypes} />
             
             <div className="flex items-center space-x-2">
-                <div className="flex-1">
+                <div className="flex-1 min-w-0">
                    <NotebookSelector notebooks={notebooks} activeNotebookId={activeNotebookId} onSelectNotebook={onSelectNotebook} onDeleteNotebook={onDeleteNotebook} />
                 </div>
-                <button onClick={handleDeleteActiveNotebook} disabled={!activeNotebookId} title="Xóa sổ ghi chú hiện tại" className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md disabled:opacity-30 disabled:cursor-not-allowed">
+                <button onClick={() => setIsRenamingNotebook(true)} disabled={!activeNotebookId} title="Đổi tên sổ ghi chú" className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0">
+                    <PencilIcon />
+                </button>
+                <button onClick={handleDeleteActiveNotebook} disabled={!activeNotebookId} title="Xóa sổ ghi chú hiện tại" className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0">
                     <TrashIcon />
                 </button>
             </div>
@@ -305,6 +356,13 @@ export const Sidebar: React.FC<SidebarProps> = (props) => {
         </div>
       </aside>
       {editingSource && <EditSourceModal source={editingSource} onClose={() => setEditingSource(null)} onUpdateSource={onUpdateSource} />}
+      {isRenamingNotebook && activeNotebook && (
+        <EditNotebookModal 
+            notebookName={activeNotebook.name} 
+            onClose={() => setIsRenamingNotebook(false)} 
+            onRename={(newName) => onRenameNotebook(activeNotebook.id, newName)} 
+        />
+      )}
       {isWebSourceModalOpen && <AddWebSourceModal onClose={() => setIsWebSourceModalOpen(false)} onAdd={onAddWebSource} />}
     </>
   );

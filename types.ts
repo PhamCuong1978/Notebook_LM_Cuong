@@ -1,3 +1,4 @@
+
 export type SourceStatus = 'ready' | 'processing' | 'error';
 
 export type SourceContent =
@@ -36,11 +37,11 @@ export interface Notebook {
 
 export type StudioHistoryItem = {
   id: string;
-  type: 'mindmap' | 'audio';
+  type: 'mindmap' | 'audio' | 'report' | 'flashcards' | 'quiz';
   status: 'loading' | 'completed' | 'error';
   name: string;
   timestamp: string;
   sourceCount: number;
-  data?: any; // Mermaid code for mindmap, base64 audio data for audio
+  data?: any; // Mermaid code for mindmap, base64 audio data for audio, HTML string for report, JSON for flashcards/quiz
   error?: string;
 };

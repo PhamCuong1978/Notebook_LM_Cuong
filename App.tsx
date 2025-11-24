@@ -1,10 +1,22 @@
+
 import React, { useState, useCallback, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
 import { SourceViewer } from './components/SourceViewer';
 import { StudioPanel } from './components/StudioPanel';
 import { Assistant } from './components/Assistant';
-import { generateGroundedResponse, extractTextAndContentFromFile, extractContentFromUrl, generateNotebookName, generateMindMap, generateAudioSummary, summarizeSourceContent } from './services/geminiService';
+import { 
+    generateGroundedResponse, 
+    extractTextAndContentFromFile, 
+    extractContentFromUrl, 
+    generateNotebookName, 
+    generateMindMap, 
+    generateAudioSummary, 
+    summarizeSourceContent, 
+    generateFinancialReport,
+    generateFlashcards,
+    generateQuiz
+} from './services/geminiService';
 import type { Source, ChatMessage, SourceContent, Notebook, StudioHistoryItem } from './types';
 import { XMarkIcon, SpinnerIcon } from './components/Icons';
 
@@ -221,6 +233,203 @@ const openMindMapInNewTab = (mindMapData: any) => {
     }
 };
 
+const openReportInNewTab = (htmlContent: string) => {
+    const newWindow = window.open();
+    if (newWindow) {
+        newWindow.document.write(`
+            <!DOCTYPE html>
+            <html lang="vi">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Báo cáo Tổng hợp</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                        line-height: 1.6;
+                        color: #333;
+                        margin: 0;
+                        padding: 40px;
+                        background-color: #f3f4f6;
+                    }
+                    .report-container {
+                        max-width: 800px;
+                        margin: 0 auto;
+                        background: #fff;
+                        padding: 50px;
+                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                        border-radius: 8px;
+                    }
+                    h1, h2, h3 { color: #1f2937; }
+                    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+                    th, td { border: 1px solid #e5e7eb; padding: 12px; text-align: left; }
+                    th { background-color: #f9fafb; font-weight: 600; }
+                    @media print {
+                        body { background: white; padding: 0; }
+                        .report-container { box-shadow: none; padding: 20px; width: 100%; max-width: 100%; }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="report-container">
+                    ${htmlContent}
+                </div>
+            </body>
+            </html>
+        `);
+        newWindow.document.close();
+    }
+};
+
+const openFlashcardsInNewTab = (data: any) => {
+    const jsonString = JSON.stringify(data.flashcards);
+    const htmlContent = `
+        <!DOCTYPE html>
+        <html lang="vi">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Thẻ ghi nhớ</title>
+            <style>
+                body { font-family: sans-serif; background-color: #f0fdf4; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 20px; }
+                h1 { color: #166534; margin-bottom: 30px; }
+                .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; width: 100%; max-width: 1000px; }
+                .card-container { perspective: 1000px; height: 200px; cursor: pointer; }
+                .card { width: 100%; height: 100%; position: relative; transition: transform 0.6s; transform-style: preserve-3d; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                .card.flipped { transform: rotateY(180deg); }
+                .front, .back { position: absolute; width: 100%; height: 100%; backface-visibility: hidden; display: flex; align-items: center; justify-content: center; padding: 20px; text-align: center; border-radius: 12px; font-size: 18px; font-weight: 500; }
+                .front { background-color: white; color: #333; }
+                .back { background-color: #22c55e; color: white; transform: rotateY(180deg); }
+            </style>
+        </head>
+        <body>
+            <h1>Thẻ ghi nhớ</h1>
+            <div id="grid" class="grid"></div>
+            <script>
+                const cards = ${jsonString};
+                const grid = document.getElementById('grid');
+                cards.forEach(card => {
+                    const container = document.createElement('div');
+                    container.className = 'card-container';
+                    container.onclick = () => container.querySelector('.card').classList.toggle('flipped');
+                    
+                    const cardDiv = document.createElement('div');
+                    cardDiv.className = 'card';
+                    
+                    const front = document.createElement('div');
+                    front.className = 'front';
+                    front.textContent = card.front;
+                    
+                    const back = document.createElement('div');
+                    back.className = 'back';
+                    back.textContent = card.back;
+                    
+                    cardDiv.appendChild(front);
+                    cardDiv.appendChild(back);
+                    container.appendChild(cardDiv);
+                    grid.appendChild(container);
+                });
+            </script>
+        </body>
+        </html>
+    `;
+    const newWindow = window.open();
+    if (newWindow) {
+        newWindow.document.write(htmlContent);
+        newWindow.document.close();
+    }
+};
+
+const openQuizInNewTab = (data: any) => {
+    const jsonString = JSON.stringify(data.questions);
+    const htmlContent = `
+        <!DOCTYPE html>
+        <html lang="vi">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Kiểm tra kiến thức</title>
+            <style>
+                body { font-family: sans-serif; background-color: #fefce8; max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+                h1 { color: #854d0e; text-align: center; margin-bottom: 40px; }
+                .question-card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #fde047; }
+                .question-text { font-size: 18px; font-weight: 600; margin-bottom: 15px; color: #333; }
+                .options { list-style: none; padding: 0; }
+                .option { margin-bottom: 10px; cursor: pointer; padding: 10px; border-radius: 6px; border: 1px solid #eee; transition: all 0.2s; display: flex; align-items: center; }
+                .option:hover { background-color: #fef08a; }
+                .option input { margin-right: 10px; }
+                .btn { display: block; width: 100%; padding: 15px; background-color: #ca8a04; color: white; border: none; border-radius: 8px; font-size: 18px; font-weight: bold; cursor: pointer; margin-top: 20px; }
+                .btn:hover { background-color: #a16207; }
+                .feedback { margin-top: 15px; padding: 15px; background-color: #f3f4f6; border-radius: 8px; display: none; }
+                .correct { color: #15803d; font-weight: bold; }
+                .incorrect { color: #b91c1c; font-weight: bold; }
+            </style>
+        </head>
+        <body>
+            <h1>Kiểm tra kiến thức</h1>
+            <div id="quiz-container"></div>
+            <button class="btn" onclick="checkAnswers()">Nộp bài</button>
+            <script>
+                const questions = ${jsonString};
+                const container = document.getElementById('quiz-container');
+                
+                questions.forEach((q, index) => {
+                    const card = document.createElement('div');
+                    card.className = 'question-card';
+                    card.innerHTML = \`
+                        <div class="question-text">\${index + 1}. \${q.question}</div>
+                        <ul class="options">
+                            \${q.options.map((opt, i) => \`
+                                <li class="option" onclick="selectOption(\${index}, \${i})">
+                                    <input type="radio" name="q\${index}" value="\${i}" id="q\${index}o\${i}">
+                                    <label for="q\${index}o\${i}" style="cursor:pointer; flex:1">\${opt}</label>
+                                </li>
+                            \`).join('')}
+                        </ul>
+                        <div class="feedback" id="feedback-\${index}"></div>
+                    \`;
+                    container.appendChild(card);
+                });
+
+                function selectOption(qIndex, oIndex) {
+                    document.getElementById(\`q\${qIndex}o\${oIndex}\`).checked = true;
+                }
+
+                function checkAnswers() {
+                    let score = 0;
+                    questions.forEach((q, index) => {
+                        const feedbackEl = document.getElementById(\`feedback-\${index}\`);
+                        const selected = document.querySelector(\`input[name="q\${index}"]:checked\`);
+                        feedbackEl.style.display = 'block';
+                        
+                        if (selected) {
+                            const val = parseInt(selected.value);
+                            if (val === q.correctAnswerIndex) {
+                                score++;
+                                feedbackEl.innerHTML = '<span class="correct">Chính xác!</span> ' + q.explanation;
+                                feedbackEl.style.backgroundColor = '#dcfce7';
+                            } else {
+                                feedbackEl.innerHTML = '<span class="incorrect">Sai rồi.</span> Đáp án đúng là: ' + q.options[q.correctAnswerIndex] + '.<br>' + q.explanation;
+                                feedbackEl.style.backgroundColor = '#fee2e2';
+                            }
+                        } else {
+                            feedbackEl.innerHTML = '<span class="incorrect">Chưa trả lời.</span>';
+                             feedbackEl.style.backgroundColor = '#fee2e2';
+                        }
+                    });
+                    alert(\`Bạn trả lời đúng \${score}/\${questions.length} câu!\`);
+                }
+            </script>
+        </body>
+        </html>
+    `;
+    const newWindow = window.open();
+    if (newWindow) {
+        newWindow.document.write(htmlContent);
+        newWindow.document.close();
+    }
+};
+
 
 const SummaryModal: React.FC<{
     isOpen: boolean;
@@ -312,6 +521,17 @@ function App() {
   const chatHistory = activeNotebook?.chatHistory || [];
   const selectedSource = sources.find(s => s.id === selectedSourceId) || null;
 
+  // Use useCallback to create a stable update function.
+  // We capture activeNotebookId in the closure but handle the state update functionally.
+  const updateActiveNotebook = useCallback((updater: (notebook: Notebook) => Notebook) => {
+    setNotebooks(prev => {
+        // If no active notebook, don't update
+        if (!activeNotebookId) return prev;
+        return prev.map(n => n.id === activeNotebookId ? updater(n) : n);
+    });
+  }, [activeNotebookId]);
+
+
   // --- Notebook Management ---
   const handleNewNotebook = useCallback(async (files: FileList) => {
     const tempNotebookId = `notebook-${Date.now()}`;
@@ -383,10 +603,9 @@ function App() {
     }
   }, [activeNotebookId, notebooks]);
 
-  const updateActiveNotebook = (updater: (notebook: Notebook) => Notebook) => {
-    if (!activeNotebookId) return;
-    setNotebooks(notebooks.map(n => n.id === activeNotebookId ? updater(n) : n));
-  };
+  const handleRenameNotebook = useCallback((id: string, newName: string) => {
+    setNotebooks(prev => prev.map(n => n.id === id ? { ...n, name: newName } : n));
+  }, []);
 
 
   // --- Source Management ---
@@ -394,30 +613,80 @@ function App() {
     if (!activeNotebookId) return;
     
     const filesArray = Array.from(files);
-    const newSources: Source[] = filesArray.map(file => ({
-        id: `source-${Date.now()}-${file.name}`, name: file.name, originalType: file.type,
-        status: 'processing', progress: 0, content: null, groundingText: null
+    // Use a more unique ID generation strategy to prevent collision if multiple files are added quickly
+    const newSources: Source[] = filesArray.map((file, index) => ({
+        id: `source-${Date.now()}-${index}-${file.name}`, 
+        name: file.name, 
+        originalType: file.type,
+        status: 'processing', 
+        progress: 0, 
+        content: null, 
+        groundingText: null
     }));
     
+    // Optimistic update: Add placeholder sources immediately
     updateActiveNotebook(n => ({ ...n, sources: [...n.sources, ...newSources] }));
 
     newSources.forEach(async (source) => {
         const file = filesArray.find(f => f.name === source.name)!;
         try {
             const { content, groundingText } = await extractTextAndContentFromFile(file, p => {
+                // Update progress using functional update to ensure we don't overwrite other parallel updates
                 updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === source.id ? { ...s, progress: p } : s) }));
             });
+            // Update completion status
             updateActiveNotebook(n => ({...n, sources: n.sources.map(s => s.id === source.id ? {...s, status: 'ready', content, groundingText, progress: 100} : s)}));
         } catch (e: any) {
             updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === source.id ? {...s, status: 'error', error: e.message, progress: 100 } : s) }));
         }
     });
-  }, [activeNotebookId, notebooks]);
+  }, [activeNotebookId, updateActiveNotebook]);
 
   const handleAddWebSource = useCallback(async (url: string) => {
-     if (!activeNotebookId) return;
-     // The rest of the logic is similar to handleAddSources, creating a source and updating it.
-  }, [activeNotebookId]);
+    if (!activeNotebookId) return;
+    
+    const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
+    const newSource: Source = {
+        id: `source-${Date.now()}-web`,
+        name: url,
+        originalType: isYoutube ? 'source/youtube' : 'source/website',
+        status: 'processing',
+        progress: 0,
+        content: null,
+        groundingText: null
+    };
+
+    updateActiveNotebook(n => ({ ...n, sources: [...n.sources, newSource] }));
+
+    try {
+        const { name, groundingText } = await extractContentFromUrl(url, (progress) => {
+             updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === newSource.id ? { ...s, progress } : s) }));
+        });
+        
+         let content: SourceContent;
+         if (isYoutube) {
+             let videoId = '';
+             if (url.includes('v=')) videoId = url.split('v=')[1]?.split('&')[0];
+             else if (url.includes('youtu.be/')) videoId = url.split('youtu.be/')[1]?.split('?')[0];
+             
+             content = { 
+                 type: 'youtube', 
+                 url, 
+                 embedUrl: videoId ? `https://www.youtube.com/embed/${videoId}` : url 
+             };
+         } else {
+             content = { type: 'website', url };
+         }
+
+        updateActiveNotebook(n => ({
+            ...n, 
+            sources: n.sources.map(s => s.id === newSource.id ? { ...s, name: name || s.name, status: 'ready', content, groundingText, progress: 100 } : s)
+        }));
+
+    } catch (e: any) {
+        updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === newSource.id ? { ...s, status: 'error', error: e.message, progress: 100 } : s) }));
+    }
+  }, [activeNotebookId, updateActiveNotebook]);
   
   const handleDeleteSource = useCallback((id: string) => {
     updateActiveNotebook(n => ({ ...n, sources: n.sources.filter(s => s.id !== id) }));
@@ -425,11 +694,11 @@ function App() {
       setSelectedSourceId(null);
       setIsViewerVisible(false);
     }
-  }, [selectedSourceId, activeNotebookId]);
+  }, [selectedSourceId, activeNotebookId, updateActiveNotebook]);
 
   const handleUpdateSource = useCallback((id: string, newName: string) => {
     updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === id ? { ...s, name: newName } : s) }));
-  }, [activeNotebookId]);
+  }, [activeNotebookId, updateActiveNotebook]);
 
   // --- Other Handlers ---
   const handleSelectSource = useCallback((source: Source) => {
@@ -456,7 +725,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [activeNotebook, sources]);
+  }, [activeNotebook, sources, updateActiveNotebook]);
   
   const handleSummarizeSource = useCallback(async (source: Source) => {
     if (!source.groundingText) {
@@ -534,6 +803,91 @@ function App() {
     }
   }, [notebooks]);
 
+    const handleGenerateReport = useCallback(async (notebookId: string): Promise<string> => {
+    const notebook = notebooks.find(n => n.id === notebookId);
+    if (!notebook) return "Không tìm thấy sổ ghi chú.";
+    
+    const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
+    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+
+    const id = `hist-report-${Date.now()}`;
+    const newItem: StudioHistoryItem = {
+        id, type: 'report', status: 'loading', name: 'Báo cáo tổng hợp',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sourceCount: readySources.length,
+    };
+    
+    setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: [newItem, ...(n.studioHistory || [])] } : n));
+
+    try {
+        const htmlReport = await generateFinancialReport(readySources);
+        openReportInNewTab(htmlReport);
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'completed', data: htmlReport } : item) } : n));
+        return `Đã tạo và mở báo cáo tổng hợp cho sổ ghi chú "${notebook.name}".`;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
+        return `Không thể tạo báo cáo: ${errorMessage}`;
+    }
+  }, [notebooks]);
+
+  const handleGenerateFlashcards = useCallback(async (notebookId: string): Promise<string> => {
+    const notebook = notebooks.find(n => n.id === notebookId);
+    if (!notebook) return "Không tìm thấy sổ ghi chú.";
+    
+    const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
+    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+
+    const id = `hist-flashcards-${Date.now()}`;
+    const newItem: StudioHistoryItem = {
+        id, type: 'flashcards', status: 'loading', name: 'Thẻ ghi nhớ',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sourceCount: readySources.length,
+    };
+    
+    setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: [newItem, ...(n.studioHistory || [])] } : n));
+
+    try {
+        const flashcardsData = await generateFlashcards(readySources);
+        openFlashcardsInNewTab(flashcardsData);
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'completed', data: flashcardsData } : item) } : n));
+        return `Đã tạo và mở thẻ ghi nhớ cho sổ ghi chú "${notebook.name}".`;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
+        return `Không thể tạo thẻ ghi nhớ: ${errorMessage}`;
+    }
+  }, [notebooks]);
+
+  const handleGenerateQuiz = useCallback(async (notebookId: string): Promise<string> => {
+    const notebook = notebooks.find(n => n.id === notebookId);
+    if (!notebook) return "Không tìm thấy sổ ghi chú.";
+    
+    const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
+    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+
+    const id = `hist-quiz-${Date.now()}`;
+    const newItem: StudioHistoryItem = {
+        id, type: 'quiz', status: 'loading', name: 'Kiểm tra kiến thức',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sourceCount: readySources.length,
+    };
+    
+    setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: [newItem, ...(n.studioHistory || [])] } : n));
+
+    try {
+        const quizData = await generateQuiz(readySources);
+        openQuizInNewTab(quizData);
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'completed', data: quizData } : item) } : n));
+        return `Đã tạo và mở bài kiểm tra cho sổ ghi chú "${notebook.name}".`;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
+        return `Không thể tạo bài kiểm tra: ${errorMessage}`;
+    }
+  }, [notebooks]);
+
+
   // --- AI Assistant Handlers ---
   const handleAIOpenNotebook = useCallback((notebookName: string): string => {
       const notebook = notebooks.find(n => n.name.toLowerCase().trim() === notebookName.toLowerCase().trim());
@@ -596,7 +950,13 @@ function App() {
       history={activeNotebook?.studioHistory || []}
       onGenerateMindMap={() => activeNotebookId && handleGenerateMindMap(activeNotebookId)}
       onGenerateAudioSummary={() => activeNotebookId && handleGenerateAudioSummary(activeNotebookId)}
+      onGenerateReport={() => activeNotebookId && handleGenerateReport(activeNotebookId)}
+      onGenerateFlashcards={() => activeNotebookId && handleGenerateFlashcards(activeNotebookId)}
+      onGenerateQuiz={() => activeNotebookId && handleGenerateQuiz(activeNotebookId)}
       onOpenMindMap={openMindMapInNewTab}
+      onOpenReport={openReportInNewTab}
+      onOpenFlashcards={openFlashcardsInNewTab}
+      onOpenQuiz={openQuizInNewTab}
     />;
   };
 
@@ -607,6 +967,7 @@ function App() {
         activeNotebookId={activeNotebookId}
         onSelectNotebook={handleSelectNotebook}
         onNewNotebook={handleNewNotebook}
+        onRenameNotebook={handleRenameNotebook}
         onDeleteNotebook={handleDeleteNotebook}
         sources={sources}
         onUpdateSource={handleUpdateSource}
