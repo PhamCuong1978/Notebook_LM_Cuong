@@ -24,7 +24,7 @@ async function callDeepSeek(messages: { role: string; content: string }[], jsonM
     }
 
     try {
-        console.log("Falling back to DeepSeek API...");
+        console.log("⚡ Switching to DeepSeek API...");
         const response = await fetch("https://api.deepseek.com/chat/completions", {
             method: "POST",
             headers: {
@@ -62,6 +62,12 @@ async function callWithRetry<T>(fn: () => Promise<T>, retries = 3, delay = 2000)
         const isQuotaError = error.status === 429 || error.code === 429 || 
                              msg.includes('429') || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED');
         
+        // FAIL-FAST: If Quota exceeded AND we have DeepSeek, stop retrying Gemini immediately.
+        if (isQuotaError && process.env.DEEPSEEK_API_KEY) {
+            console.warn("Gemini Quota Exceeded. Switching to DeepSeek immediately.");
+            throw new Error("QUOTA_EXCEEDED_SWITCH_TO_DEEPSEEK"); 
+        }
+
         if (retries > 0 && isQuotaError) {
             console.warn(`Gemini API quota exceeded, retrying in ${delay}ms... (${retries} retries left)`);
             await new Promise(resolve => setTimeout(resolve, delay));
@@ -335,7 +341,6 @@ User's Question: ${question}
         }));
         return response.text;
     } catch (error: any) {
-        console.error("Gemini failed:", error);
         // Fallback to DeepSeek if configured and error is Quota related or general failure
         if (process.env.DEEPSEEK_API_KEY) {
             try {
@@ -390,7 +395,6 @@ export async function generateMindMap(sources: Source[]): Promise<any> {
         const jsonText = result.text.trim();
         return JSON.parse(jsonText);
     } catch (error: any) {
-        console.error("Gemini Mindmap failed:", error);
         // Fallback to DeepSeek
          if (process.env.DEEPSEEK_API_KEY) {
             try {
@@ -643,6 +647,7 @@ export async function generateFinancialReport(sources: Source[], chatHistory: Ch
     `;
 
     try {
+        // Try Gemini with thinkingConfig first
         const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,

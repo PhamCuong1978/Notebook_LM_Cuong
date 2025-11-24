@@ -47,10 +47,10 @@ export type StudioHistoryItem = {
 };
 
 declare global {
-    interface Window {
-        aistudio?: {
-            hasSelectedApiKey(): Promise<boolean>;
-            openSelectKey(): Promise<void>;
-        };
+    // We define the AIStudio interface to match the expected type from the existing declaration.
+    // This allows us to use window.aistudio methods without redeclaring the property on Window.
+    interface AIStudio {
+        hasSelectedApiKey(): Promise<boolean>;
+        openSelectKey(): Promise<void>;
     }
 }
