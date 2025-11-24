@@ -1,20 +1,75 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
-import type { Source, SourceContent } from '../types';
+import type { Source, SourceContent, ChatMessage } from '../types';
 
 declare const pdfjsLib: any;
 declare const XLSX: any;
 
 // Log warning if API key is missing (helps debugging in Vercel logs)
 if (!process.env.API_KEY) {
-    console.error("CRITICAL ERROR: process.env.API_KEY is missing or empty. Please check your Vercel Environment Variables (VITE_API_KEY) and redeploy.");
+    console.error("CRITICAL ERROR: process.env.API_KEY is missing. Please check Vercel Env Vars.");
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Use a getter to always use the latest API key from process.env
+const getAi = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 // Switching to flash for better stability and availability on standard tiers
 const model = 'gemini-2.5-flash'; 
 
+// --- DeepSeek Integration ---
+
+async function callDeepSeek(messages: { role: string; content: string }[], jsonMode: boolean = false): Promise<string> {
+    const apiKey = process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) {
+        throw new Error("DeepSeek API Key not configured.");
+    }
+
+    try {
+        console.log("Falling back to DeepSeek API...");
+        const response = await fetch("https://api.deepseek.com/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: "deepseek-chat",
+                messages: messages,
+                stream: false,
+                response_format: jsonMode ? { type: "json_object" } : { type: "text" }
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`DeepSeek API Error: ${response.status} - ${errorText}`);
+        }
+
+        const data = await response.json();
+        return data.choices[0].message.content;
+    } catch (error) {
+        console.error("DeepSeek Call Failed:", error);
+        throw error;
+    }
+}
+
 // --- Helper Functions ---
+
+async function callWithRetry<T>(fn: () => Promise<T>, retries = 3, delay = 2000): Promise<T> {
+    try {
+        return await fn();
+    } catch (error: any) {
+        const msg = error.message || '';
+        const isQuotaError = error.status === 429 || error.code === 429 || 
+                             msg.includes('429') || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED');
+        
+        if (retries > 0 && isQuotaError) {
+            console.warn(`Gemini API quota exceeded, retrying in ${delay}ms... (${retries} retries left)`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return callWithRetry(fn, retries - 1, delay * 2); // Exponential backoff
+        }
+        throw error;
+    }
+}
 
 function base64ToUtf8(base64: string): string {
     try {
@@ -66,10 +121,10 @@ async function processMultimodalPrompt(parts: any[]): Promise<string> {
     const prompt = "Your task is to extract all readable text from the provided file. If it's an audio or video file, transcribe the speech. If it's an image with no text, provide a detailed description of the image(s). Respond with only the extracted text, transcription, or description.";
     
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: { parts: [{text: prompt}, ...parts] },
-        });
+        }));
         return result.text;
     } catch (error) {
         console.error("Error processing multimodal prompt:", error);
@@ -108,14 +163,14 @@ URL: ${url}`;
       };
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
                 responseSchema: responseSchema,
             }
-        });
+        }));
         onProgress(90);
 
         const jsonText = result.text.trim();
@@ -186,18 +241,25 @@ export async function extractTextAndContentFromFile(file: File, onProgress: (pro
     ) {
         onProgress(20);
         const arrayBuffer = await fileToArrayBuffer(file);
-        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-        onProgress(60);
         
-        let fullText = '';
-        workbook.SheetNames.forEach((sheetName: string) => {
-            fullText += `--- Sheet: ${sheetName} ---\n\n`;
-            const worksheet = workbook.Sheets[sheetName];
-            const csv = XLSX.utils.sheet_to_csv(worksheet);
-            fullText += csv + '\n\n';
-        });
+        // Handle DOCX/XLSX text extraction logic
+        let groundingText = '';
+        try {
+            const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+            onProgress(60);
+            
+            workbook.SheetNames.forEach((sheetName: string) => {
+                groundingText += `--- Sheet: ${sheetName} ---\n\n`;
+                const worksheet = workbook.Sheets[sheetName];
+                const csv = XLSX.utils.sheet_to_csv(worksheet);
+                groundingText += csv + '\n\n';
+            });
+            groundingText = groundingText.trim();
+        } catch (e) {
+             console.warn("XLSX read failed, attempting naive extraction or empty", e);
+             groundingText = "Could not extract structured text from this document. Please refer to original file.";
+        }
 
-        const groundingText = fullText.trim();
         const content: SourceContent = { type: 'text', value: groundingText };
         onProgress(100);
         return { content, groundingText };
@@ -229,7 +291,7 @@ export async function extractTextAndContentFromFile(file: File, onProgress: (pro
 }
 
 
-export async function generateGroundedResponse(sources: Source[], question: string): Promise<string> {
+export async function generateGroundedResponse(sources: Source[], question: string, chatHistory: ChatMessage[] = []): Promise<string> {
     const sourcePreamble = sources
         .filter(s => s.status === 'ready' && s.groundingText)
         .map((source, index) => {
@@ -240,10 +302,22 @@ export async function generateGroundedResponse(sources: Source[], question: stri
         return "There are no valid sources to answer the question from. Please add and process some sources first.";
     }
 
-    const prompt = `
-You are an expert research assistant. Your task is to answer the user's question based ONLY on the provided sources. Do not use any external knowledge.
+    // Include recent chat context (last 5 messages) for conversational awareness
+    const recentContext = chatHistory.slice(-5)
+        .map(msg => `${msg.role.toUpperCase()}: ${msg.content}`)
+        .join('\n');
 
-When you use information from a source, you must cite the source number in brackets, like this: [1]. A single sentence can have multiple citations if it draws from multiple sources, like this: [1][2].
+    const systemPrompt = `You are an expert research assistant. You have access to ${sources.length} source file(s).
+Your task is to answer the user's question based ONLY on the provided sources. Do not use any external knowledge.
+
+INSTRUCTIONS:
+1. Read ALL sources carefully.
+2. If the user is asking to adjust or clarify a previous answer, use the Conversation Context.
+3. Cite your sources using brackets like [1].`;
+
+    const fullPrompt = `
+Conversation Context:
+${recentContext}
 
 Here are the sources:
 
@@ -255,14 +329,25 @@ User's Question: ${question}
 `;
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await callWithRetry(() => getAi().models.generateContent({
             model: model,
-            contents: prompt,
-        });
+            contents: systemPrompt + "\n" + fullPrompt,
+        }));
         return response.text;
     } catch (error: any) {
-        console.error("Error generating response from Gemini API:", error);
-        // Provide clearer error to the UI
+        console.error("Gemini failed:", error);
+        // Fallback to DeepSeek if configured and error is Quota related or general failure
+        if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                return await callDeepSeek([
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: fullPrompt }
+                ]);
+            } catch (dsError) {
+                 console.error("DeepSeek also failed:", dsError);
+            }
+        }
+        
         if (error.message?.includes('API key')) {
              return "Lỗi: Không tìm thấy API Key. Vui lòng kiểm tra cài đặt Environment Variable trên Vercel.";
         }
@@ -295,22 +380,39 @@ export async function generateMindMap(sources: Source[]): Promise<any> {
     `;
     
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
             }
-        });
+        }));
         const jsonText = result.text.trim();
         return JSON.parse(jsonText);
     } catch (error: any) {
-        console.error("Error generating mind map from Gemini API:", error);
+        console.error("Gemini Mindmap failed:", error);
+        // Fallback to DeepSeek
+         if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                const dsResult = await callDeepSeek([
+                    { role: 'system', content: "You are a JSON generator." },
+                    { role: 'user', content: prompt + "\nEnsure output is pure JSON." }
+                ], true);
+                
+                // DeepSeek might return markdown json block
+                const cleaned = dsResult.replace(/^```json/, '').replace(/^```/, '').replace(/```$/, '');
+                return JSON.parse(cleaned);
+            } catch (dsError) {
+                 console.error("DeepSeek Mindmap failed:", dsError);
+            }
+        }
         throw new Error(error.message || "The AI model failed to generate the mind map JSON.");
     }
 }
 
 export async function generateAudioSummary(sources: Source[]): Promise<string> {
+    // ... Existing implementation (DeepSeek cannot do TTS) ...
+    // Using simple retry logic inside extract logic, but TTS requires Gemini
     const sourcePreamble = sources
         .filter(s => s.status === 'ready' && s.groundingText)
         .map((source, index) => `--- SOURCE ${index + 1}: ${source.name} ---\n${source.groundingText}`)
@@ -320,7 +422,6 @@ export async function generateAudioSummary(sources: Source[]): Promise<string> {
         throw new Error("No valid sources provided for audio summary generation.");
     }
 
-    // Step 1: Generate a text summary in Vietnamese
     const summaryPrompt = `
         Summarize the key information from the following sources into a concise, well-structured paragraph in Vietnamese.
         The summary should be suitable for being read aloud as an audio overview.
@@ -331,15 +432,27 @@ export async function generateAudioSummary(sources: Source[]): Promise<string> {
         --- END OF SOURCES ---
     `;
     
+    let summaryText = "";
     try {
-        const summaryResponse = await ai.models.generateContent({
+        const summaryResponse = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: summaryPrompt,
-        });
-        const summaryText = summaryResponse.text;
+        }));
+        summaryText = summaryResponse.text;
+    } catch (error) {
+        // Fallback to DeepSeek for the TEXT summary part
+        if (process.env.DEEPSEEK_API_KEY) {
+             summaryText = await callDeepSeek([
+                { role: 'user', content: summaryPrompt }
+            ]);
+        } else {
+            throw error;
+        }
+    }
 
-        // Step 2: Convert the summary text to speech
-        const ttsResponse = await ai.models.generateContent({
+    try {
+        // TTS Step (Gemini Exclusive)
+        const ttsResponse = await callWithRetry(() => getAi().models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
             contents: [{ parts: [{ text: summaryText }] }],
             config: {
@@ -350,7 +463,7 @@ export async function generateAudioSummary(sources: Source[]): Promise<string> {
                     },
                 },
             },
-        });
+        }));
 
         const audioData = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 
@@ -365,7 +478,7 @@ export async function generateAudioSummary(sources: Source[]): Promise<string> {
     }
 }
 
-export async function generateFinancialReport(sources: Source[]): Promise<string> {
+export async function generateFinancialReport(sources: Source[], chatHistory: ChatMessage[] = []): Promise<string> {
     const sourcePreamble = sources
         .filter(s => s.status === 'ready' && s.groundingText)
         .map((source, index) => `--- SOURCE ${index + 1}: ${source.name} ---\n${source.groundingText}`)
@@ -375,53 +488,196 @@ export async function generateFinancialReport(sources: Source[]): Promise<string
         throw new Error("No valid sources provided for financial report generation.");
     }
 
-    const prompt = `
-    You are a professional financial analyst. Your task is to compile a "Báo cáo Tổng hợp" (Financial Summary Report) in Vietnamese based on the provided source documents.
+    const chatContext = chatHistory
+        .map(msg => `${msg.role === 'user' ? 'USER' : 'AI'}: ${msg.content}`)
+        .join('\n');
+
+    const systemPrompt = `You are a professional financial analyst. Your task is to compile a "BC_SmeFund" (Financial Summary Report) in Vietnamese based on the provided source documents.`;
     
-    The sources may include:
-    - Financial Statements (Báo cáo tài chính)
-    - Business Registration (Đăng ký kinh doanh)
-    - VAT Declarations (Tờ khai thuế GTGT)
-    - Other related documents.
+    const prompt = `
+    ${systemPrompt}
+    
+    **INPUT CONTEXT:**
+    - **Total Source Files:** ${sources.length} files. You MUST review EVERY file provided below.
+    - **Chat History:** Contains user instructions. You MUST obey these instructions.
 
-    Your report must be a comprehensive HTML document with inline CSS for styling. It should look professional, like a real printed report.
+    **USER ADJUSTMENT INSTRUCTIONS (HIGHEST PRIORITY):**
+    The "USER CHAT NOTES" section below contains specific adjustments or corrections requested by the user.
+    **RULE:** If the User Chat Notes contradict the Source Files, the User Chat Notes WIN.
 
-    Structure the report with the following sections if data is available:
-    1.  **Thông tin chung (General Information):** Extract Company Name, Tax Code (Mã số thuế), Address, Legal Representative, Charter Capital, etc. from Business Registration or other docs.
-    2.  **Tình hình tài chính (Financial Status):** Summarize key figures from the Balance Sheet (Total Assets, Liabilities, Equity) across available years. Present this in a clean HTML table.
-    3.  **Kết quả kinh doanh (Business Results):** Summarize Revenue, Costs, and Profit/Loss from the P&L statement. Present in a table comparing years.
-    4.  **Thông tin về Thuế (Tax Information):** Summarize VAT, CIT details if available from tax declarations.
-    5.  **Nhận xét chung (Summary/Observations):** A brief professional summary of the company's financial health based on the data.
+    **DATA EXTRACTION RULES:**
+    1. **Company Info**: Extract from the header/legal info.
+    2. **Balance Sheet**: Identify Reporting Year (X). "Số đầu năm" = [X-1], "Số cuối năm" = [X].
+    3. **Income Statement**: "Năm trước" = [X-1], "Năm nay" = [X]. **Create a "Tổng cộng" column summing all years.**
+    4. **Quarterly Revenue**: Look for VAT Declarations.
+    5. **Bank Loans**: Search for loan contracts.
+    6. **Additional Info**: Incorporate points from "USER CHAT NOTES".
 
-    **Requirements:**
-    - Output MUST be valid HTML code only. Do not wrap in markdown code blocks (like \`\`\`html).
-    - Use a clean, modern design with a white background, readable fonts (Arial/sans-serif), and distinct section headers.
-    - Use tables for numerical data.
-    - If specific data is missing from the sources, state "Không có dữ liệu trong tài liệu nguồn" for that section or field.
-    - Language: Vietnamese.
+    FORMATTING:
+    - Use the HTML/CSS template below EXACTLY.
+    - Do not markdown format the output (no \`\`\`html wrapper).
+    - Use Vietnamese for all content.
 
-    Here are the sources:
+    TEMPLATE:
+    <!DOCTYPE html>
+    <html lang="vi">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>BC_SmeFund</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; margin: 20px; color: #333; }
+            h1, h2 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+            table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+            th, td { border: 1px solid #ddd; padding: 10px; }
+            th { background-color: #f2f2f2; text-align: center; }
+            td { text-align: right; }
+            .text-left { text-align: left; }
+            .company-info { background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+            .highlight { background-color: #e8f4fc; font-weight: bold; }
+            .section { margin-bottom: 40px; }
+            .total-column { background-color: #f0f8ff; font-weight: bold; }
+            .year-2025 { background-color: #fff8e1; }
+            .company-details { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px; }
+            .company-details div { margin-bottom: 8px; }
+            .bank-loans { background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .additional-info { background-color: #e8f5e9; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .additional-info ul { margin: 0; padding-left: 20px; }
+            .additional-info li { margin-bottom: 8px; }
+        </style>
+    </head>
+    <body>
+        <h1>BC_SmeFund - Tổng Hợp Báo Cáo Tài Chính</h1>
+        
+        <div class="company-info">
+            <h2>Thông tin Doanh nghiệp</h2>
+            <div class="company-details">
+                <!-- Fill details -->
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Bảng Cân Đối Kế Toán (Đơn vị: VNĐ)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th class="text-left">Chỉ tiêu</th>
+                        <!-- Generate YEAR columns -->
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Fill Balance Sheet Data -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Báo Cáo Kết Quả Hoạt Động Kinh Doanh (Đơn vị: VNĐ)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th class="text-left">Chỉ tiêu</th>
+                        <!-- Generate YEAR columns -->
+                        <th class="total-column">Tổng cộng</th>
+                    </tr>
+                </thead>
+                <tbody>
+                     <!-- Fill Income Statement Data -->
+                </tbody>
+            </table>
+        </div>
+
+         <div class="section">
+            <h2>Phân Tích Doanh Thu Theo Quý (Năm gần nhất/Tờ khai thuế)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th class="text-left">Quý</th>
+                        <th>Doanh thu (VNĐ)</th>
+                        <th>Tỷ trọng (%)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Fill VAT Data -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Dư Nợ Ngân Hàng Đến Thời Điểm Hiện Tại</h2>
+            <div class="bank-loans">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>STT</th>
+                            <th class="text-left">Tên ngân hàng</th>
+                            <th>Số tiền (VNĐ)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Fill Loan Data -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Thông Tin Bổ Sung</h2>
+            <div class="additional-info">
+                <ul>
+                    <!-- User notes -->
+                </ul>
+            </div>
+        </div>
+    </body>
+    </html>
+
+    Respond with the valid HTML code only.
+
+    USER CHAT NOTES:
+    ${chatContext}
+
+    Here are the ${sources.length} sources:
     ${sourcePreamble}
     --- END OF SOURCES ---
     `;
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,
-        });
+            config: {
+                thinkingConfig: { thinkingBudget: 4096 }, 
+            }
+        }));
         
         let htmlContent = result.text.trim();
-        // Cleanup if the model wraps it in markdown despite instructions
         if (htmlContent.startsWith("```html")) {
             htmlContent = htmlContent.replace(/^```html/, "").replace(/```$/, "");
         } else if (htmlContent.startsWith("```")) {
             htmlContent = htmlContent.replace(/^```/, "").replace(/```$/, "");
         }
-
         return htmlContent;
     } catch (error: any) {
-        console.error("Error generating financial report:", error);
+        console.error("Gemini Report failed:", error);
+         // Fallback to DeepSeek
+         if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                const dsResult = await callDeepSeek([
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: prompt }
+                ]);
+                let cleaned = dsResult.trim();
+                if (cleaned.startsWith("```html")) {
+                    cleaned = cleaned.replace(/^```html/, "").replace(/```$/, "");
+                } else if (cleaned.startsWith("```")) {
+                    cleaned = cleaned.replace(/^```/, "").replace(/```$/, "");
+                }
+                return cleaned;
+            } catch (dsError) {
+                 console.error("DeepSeek Report failed:", dsError);
+            }
+        }
         throw new Error(error.message || "The AI model failed to generate the financial report.");
     }
 }
@@ -431,7 +687,7 @@ export async function generateNotebookName(groundingTexts: string[]): Promise<st
         return "Sổ ghi chú mới";
     }
 
-    const combinedText = groundingTexts.join('\n\n');
+    const combinedText = groundingTexts.join('\n\n').substring(0, 15000);
 
     const prompt = `
     Dựa trên nội dung sau, hãy đề xuất một tiêu đề ngắn gọn (từ 3 đến 8 từ) bằng tiếng Việt cho một sổ ghi chú.
@@ -442,14 +698,22 @@ export async function generateNotebookName(groundingTexts: string[]): Promise<st
     `;
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,
-        });
-        return result.text.trim().replace(/"/g, ''); // Clean up potential quotes
+        }));
+        return result.text.trim().replace(/"/g, ''); 
     } catch (error) {
-        console.error("Error generating notebook name:", error);
-        return "Sổ ghi chú chưa có tên"; // Fallback name
+         // Fallback to DeepSeek
+         if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                const dsResult = await callDeepSeek([{ role: 'user', content: prompt }]);
+                return dsResult.trim().replace(/"/g, '');
+            } catch (e) {
+                 console.error(e);
+            }
+        }
+        return "Sổ ghi chú chưa có tên"; 
     }
 }
 
@@ -471,17 +735,23 @@ export async function summarizeSourceContent(groundingText: string): Promise<str
     `;
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
-                responseSchema: null as any, // Explicitly null to avoid type issues if strict mode
+                responseSchema: null as any, 
             }
-        });
+        }));
         return result.text;
     } catch (error: any) {
-        console.error("Error generating summary from Gemini API:", error);
+        console.error("Gemini Summary failed:", error);
+         // Fallback to DeepSeek
+         if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                return await callDeepSeek([{ role: 'user', content: prompt }]);
+            } catch (e) { console.error(e); }
+        }
         throw new Error(error.message || "The AI model failed to generate the summary.");
     }
 }
@@ -508,7 +778,7 @@ export async function generateFlashcards(sources: Source[]): Promise<any> {
     `;
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,
             config: {
@@ -531,11 +801,29 @@ export async function generateFlashcards(sources: Source[]): Promise<any> {
                     required: ["flashcards"]
                 }
             }
-        });
+        }));
         const jsonText = result.text.trim();
         return JSON.parse(jsonText);
     } catch (error: any) {
-        console.error("Error generating flashcards:", error);
+        console.error("Gemini Flashcards failed:", error);
+        // Fallback to DeepSeek
+         if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                 const dsResult = await callDeepSeek([
+                    { role: 'system', content: "You are a JSON generator." },
+                    { role: 'user', content: prompt + "\nRespond with valid JSON only." }
+                ], true);
+                
+                let cleaned = dsResult.trim();
+                // Clean markdown code blocks if present
+                if (cleaned.startsWith('```json')) {
+                    cleaned = cleaned.replace(/^```json/, '').replace(/```$/, '');
+                } else if (cleaned.startsWith('```')) {
+                     cleaned = cleaned.replace(/^```/, '').replace(/```$/, '');
+                }
+                return JSON.parse(cleaned);
+            } catch (e) { console.error(e); }
+        }
         throw new Error(error.message || "Failed to generate flashcards.");
     }
 }
@@ -563,7 +851,7 @@ export async function generateQuiz(sources: Source[]): Promise<any> {
     `;
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await callWithRetry(() => getAi().models.generateContent({
             model: model,
             contents: prompt,
             config: {
@@ -588,11 +876,110 @@ export async function generateQuiz(sources: Source[]): Promise<any> {
                     required: ["questions"]
                 }
             }
-        });
+        }));
         const jsonText = result.text.trim();
         return JSON.parse(jsonText);
     } catch (error: any) {
-        console.error("Error generating quiz:", error);
+        console.error("Gemini Quiz failed:", error);
+         // Fallback to DeepSeek
+         if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                 const dsResult = await callDeepSeek([
+                    { role: 'system', content: "You are a JSON generator." },
+                    { role: 'user', content: prompt + "\nRespond with valid JSON only." }
+                ], true);
+                
+                let cleaned = dsResult.trim();
+                 if (cleaned.startsWith('```json')) {
+                    cleaned = cleaned.replace(/^```json/, '').replace(/```$/, '');
+                } else if (cleaned.startsWith('```')) {
+                     cleaned = cleaned.replace(/^```/, '').replace(/```$/, '');
+                }
+                return JSON.parse(cleaned);
+            } catch (e) { console.error(e); }
+        }
         throw new Error(error.message || "Failed to generate quiz.");
+    }
+}
+
+export async function generateVideoScript(sources: Source[]): Promise<string> {
+    // ... video script logic ...
+     const sourcePreamble = sources
+        .filter(s => s.status === 'ready' && s.groundingText)
+        .map((source, index) => `--- SOURCE ${index + 1}: ${source.name} ---\n${source.groundingText}`)
+        .join('\n\n');
+
+    if (!sourcePreamble) {
+        throw new Error("No valid sources provided for video script generation.");
+    }
+
+    const prompt = `
+    Create a prompt for a video generation model (like Veo) based on the key themes of these sources.
+    The goal is to generate a short, engaging video summary or visual representation of the content.
+    
+    Describe the visual style, the key scene to be generated, the mood, and lighting.
+    Use terms like "photorealistic", "8k", "cinematic lighting", "high details".
+    Keep the prompt under 100 words.
+    Language: English.
+
+    Here are the sources:
+    ${sourcePreamble}
+    --- END OF SOURCES ---
+    `;
+
+    try {
+        const result = await callWithRetry(() => getAi().models.generateContent({
+            model: model,
+            contents: prompt,
+        }));
+        return result.text.trim();
+    } catch (error: any) {
+        console.error("Error generating video script:", error);
+         // Fallback to DeepSeek
+         if (process.env.DEEPSEEK_API_KEY) {
+            try {
+                return await callDeepSeek([{ role: 'user', content: prompt }]);
+            } catch (e) { console.error(e); }
+        }
+        throw new Error(error.message || "Failed to generate video script.");
+    }
+}
+
+export async function generateVideo(prompt: string): Promise<string> {
+    // Always use getAi() to ensure we use the latest API key
+    // Note: Video Generation is Gemini/Veo exclusive. DeepSeek cannot do this.
+    const localAi = getAi();
+
+    try {
+        let operation = await localAi.models.generateVideos({
+            model: 'veo-3.1-fast-generate-preview',
+            prompt: prompt,
+            config: {
+                numberOfVideos: 1,
+                resolution: '1080p',
+                aspectRatio: '16:9'
+            }
+        });
+
+        while (!operation.done) {
+            await new Promise(resolve => setTimeout(resolve, 5000)); // 5s polling
+            operation = await localAi.operations.getVideosOperation({ operation: operation });
+        }
+
+        const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+        if (!downloadLink) throw new Error("No video URI returned from Veo.");
+
+        // Fetch the video bytes securely
+        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        if (!response.ok) throw new Error("Failed to download generated video.");
+        
+        const blob = await response.blob();
+        // Reuse the fileToBase64 logic by creating a File object
+        const file = new File([blob], "generated_video.mp4", { type: "video/mp4" });
+        return await fileToBase64(file);
+
+    } catch (error: any) {
+        console.error("Error generating video with Veo:", error);
+        throw new Error(error.message || "Failed to generate video.");
     }
 }

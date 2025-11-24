@@ -1,3 +1,4 @@
+
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -13,6 +14,7 @@ export default defineConfig(({ mode }) => {
       // This replaces 'process.env.API_KEY' in your code with the actual string value of VITE_API_KEY during build.
       // If VITE_API_KEY is missing, it defaults to an empty string to avoid "process is not defined" crashes.
       'process.env.API_KEY': JSON.stringify(env.VITE_API_KEY || ''),
+      'process.env.DEEPSEEK_API_KEY': JSON.stringify(env.VITE_DEEPSEEK_API_KEY || ''),
     },
   };
 });

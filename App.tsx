@@ -15,7 +15,9 @@ import {
     summarizeSourceContent, 
     generateFinancialReport,
     generateFlashcards,
-    generateQuiz
+    generateQuiz,
+    generateVideoScript,
+    generateVideo
 } from './services/geminiService';
 import type { Source, ChatMessage, SourceContent, Notebook, StudioHistoryItem } from './types';
 import { XMarkIcon, SpinnerIcon } from './components/Icons';
@@ -35,6 +37,13 @@ const getSanitizedNotebooksForStorage = (notebooksToSave: Notebook[]): Notebook[
         return { ...source, content: null };
       }
       return source;
+    }),
+    studioHistory: notebook.studioHistory.map(item => {
+        // Clear data for large items to save storage space in localStorage
+        if (item.status === 'completed' && (item.type === 'audio' || item.type === 'video')) {
+            return { ...item, data: undefined };
+        }
+        return item;
     })
   }));
 };
@@ -236,47 +245,9 @@ const openMindMapInNewTab = (mindMapData: any) => {
 const openReportInNewTab = (htmlContent: string) => {
     const newWindow = window.open();
     if (newWindow) {
-        newWindow.document.write(`
-            <!DOCTYPE html>
-            <html lang="vi">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Báo cáo Tổng hợp</title>
-                <style>
-                    body {
-                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                        line-height: 1.6;
-                        color: #333;
-                        margin: 0;
-                        padding: 40px;
-                        background-color: #f3f4f6;
-                    }
-                    .report-container {
-                        max-width: 800px;
-                        margin: 0 auto;
-                        background: #fff;
-                        padding: 50px;
-                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                        border-radius: 8px;
-                    }
-                    h1, h2, h3 { color: #1f2937; }
-                    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-                    th, td { border: 1px solid #e5e7eb; padding: 12px; text-align: left; }
-                    th { background-color: #f9fafb; font-weight: 600; }
-                    @media print {
-                        body { background: white; padding: 0; }
-                        .report-container { box-shadow: none; padding: 20px; width: 100%; max-width: 100%; }
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="report-container">
-                    ${htmlContent}
-                </div>
-            </body>
-            </html>
-        `);
+        // AI now returns a full HTML document including DOCTYPE and styled HEAD/BODY.
+        // We write it directly to the new window.
+        newWindow.document.write(htmlContent);
         newWindow.document.close();
     }
 };
@@ -430,6 +401,32 @@ const openQuizInNewTab = (data: any) => {
     }
 };
 
+const openVideoInNewTab = (base64Video: string) => {
+    const newWindow = window.open();
+    if (newWindow) {
+        newWindow.document.write(`
+            <!DOCTYPE html>
+            <html lang="vi">
+            <head>
+                <meta charset="UTF-8">
+                <title>Video Tổng quan</title>
+                <style>
+                    body { margin: 0; background: black; display: flex; align-items: center; justify-content: center; height: 100vh; }
+                    video { max-width: 100%; max-height: 100%; }
+                </style>
+            </head>
+            <body>
+                <video controls autoplay>
+                    <source src="data:video/mp4;base64,${base64Video}" type="video/mp4">
+                    Trình duyệt của bạn không hỗ trợ thẻ video.
+                </video>
+            </body>
+            </html>
+        `);
+        newWindow.document.close();
+    }
+}
+
 
 const SummaryModal: React.FC<{
     isOpen: boolean;
@@ -558,30 +555,43 @@ function App() {
     setNotebooks(prev => [tempNotebook, ...prev]);
     setActiveNotebookId(tempNotebookId);
     
-    const processedSources = await Promise.all(newSources.map(async (source): Promise<Source> => {
+    // Process sources SEQUENTIALLY to avoid rate limits
+    const processedSources: Source[] = [];
+    for (const source of newSources) {
         const file = filesArray.find(f => f.name === source.name)!;
         try {
             const { content, groundingText } = await extractTextAndContentFromFile(file, (progress) => {
-                setNotebooks(prev => prev.map(n => n.id === tempNotebookId ? { ...n, sources: n.sources.map(s => s.id === source.id ? { ...s, progress } : s) } : n));
+                 setNotebooks(prev => prev.map(n => n.id === tempNotebookId ? { ...n, sources: n.sources.map(s => s.id === source.id ? { ...s, progress } : s) } : n));
             });
-            return { ...source, status: 'ready', content, groundingText, progress: 100 };
+            processedSources.push({ ...source, status: 'ready', content, groundingText, progress: 100 });
         } catch (e: any) {
-            return { ...source, status: 'error', error: e.message, progress: 100 };
+             processedSources.push({ ...source, status: 'error', error: e.message, progress: 100 });
         }
-    }));
+    }
 
     const finalSources = processedSources.filter(s => s.status === 'ready');
     const groundingTexts = finalSources.map(s => s.groundingText || '');
     const notebookName = await generateNotebookName(groundingTexts);
     
-    const finalNotebook: Notebook = {
-        ...tempNotebook,
-        name: notebookName,
-        sources: processedSources,
-        chatHistory: [{ id: 'welcome', role: 'model', content: `Chào mừng đến với sổ ghi chú "${notebookName}"! Hãy bắt đầu bằng cách đặt câu hỏi về các nguồn của bạn.` }]
-    };
+    setNotebooks(prev => prev.map(n => {
+        if (n.id !== tempNotebookId) return n;
 
-    setNotebooks(prev => prev.map(n => n.id === tempNotebookId ? finalNotebook : n));
+        // Create a map of the processed sources for easy lookup
+        const processedMap = new Map(processedSources.map(s => [s.id, s]));
+        
+        // Map over the current sources in the state.
+        const mergedSources = n.sources.map(s => processedMap.get(s.id) || s);
+
+        return {
+            ...n,
+            name: notebookName,
+            sources: mergedSources,
+            chatHistory: n.chatHistory.length === 0 
+                ? [{ id: 'welcome', role: 'model', content: `Chào mừng đến với sổ ghi chú "${notebookName}"! Hãy bắt đầu bằng cách đặt câu hỏi về các nguồn của bạn.` }] 
+                : n.chatHistory
+        };
+    }));
+
     if (finalSources.length > 0) {
       setSelectedSourceId(finalSources[0].id);
       setIsViewerVisible(true);
@@ -627,19 +637,18 @@ function App() {
     // Optimistic update: Add placeholder sources immediately
     updateActiveNotebook(n => ({ ...n, sources: [...n.sources, ...newSources] }));
 
-    newSources.forEach(async (source) => {
+    // Process sources SEQUENTIALLY to avoid rate limits
+    for (const source of newSources) {
         const file = filesArray.find(f => f.name === source.name)!;
         try {
             const { content, groundingText } = await extractTextAndContentFromFile(file, p => {
-                // Update progress using functional update to ensure we don't overwrite other parallel updates
-                updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === source.id ? { ...s, progress: p } : s) }));
+                 updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === source.id ? { ...s, progress: p } : s) }));
             });
-            // Update completion status
             updateActiveNotebook(n => ({...n, sources: n.sources.map(s => s.id === source.id ? {...s, status: 'ready', content, groundingText, progress: 100} : s)}));
         } catch (e: any) {
             updateActiveNotebook(n => ({ ...n, sources: n.sources.map(s => s.id === source.id ? {...s, status: 'error', error: e.message, progress: 100 } : s) }));
         }
-    });
+    }
   }, [activeNotebookId, updateActiveNotebook]);
 
   const handleAddWebSource = useCallback(async (url: string) => {
@@ -715,7 +724,10 @@ function App() {
     setIsLoading(true);
     
     try {
-      const responseText = await generateGroundedResponse(sources, message);
+      // Pass the updated chat history including the new message to the AI
+      // Note: We reconstruct it here because state update is async
+      const updatedHistory = [...activeNotebook.chatHistory, userMessage];
+      const responseText = await generateGroundedResponse(sources, message, updatedHistory);
       const modelMessage: ChatMessage = { id: `msg-${Date.now() + 1}`, role: 'model', content: responseText };
       updateActiveNotebook(n => ({...n, chatHistory: [...n.chatHistory, modelMessage]}));
     } catch (err) {
@@ -729,7 +741,7 @@ function App() {
   
   const handleSummarizeSource = useCallback(async (source: Source) => {
     if (!source.groundingText) {
-        console.error("Source has no text to summarize.");
+        alert("Nguồn này không có nội dung văn bản để tóm tắt.");
         return;
     }
 
@@ -755,7 +767,10 @@ function App() {
     if (!notebook) return "Không tìm thấy sổ ghi chú.";
     
     const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
-    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    if (readySources.length === 0) {
+        alert("Không thể tạo bản đồ tư duy: Không có nguồn nào sẵn sàng hoặc các nguồn không có nội dung văn bản.");
+        return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    }
 
     const id = `hist-mindmap-${Date.now()}`;
     const newItem: StudioHistoryItem = {
@@ -782,7 +797,10 @@ function App() {
     const notebook = notebooks.find(n => n.id === notebookId);
     if (!notebook) return "Không tìm thấy sổ ghi chú.";
     const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
-    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    if (readySources.length === 0) {
+        alert("Không thể tạo tóm tắt âm thanh: Không có nguồn nào sẵn sàng hoặc các nguồn không có nội dung văn bản.");
+        return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    }
 
     const id = `hist-audio-${Date.now()}`;
     const newItem: StudioHistoryItem = {
@@ -808,11 +826,14 @@ function App() {
     if (!notebook) return "Không tìm thấy sổ ghi chú.";
     
     const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
-    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    if (readySources.length === 0) {
+        alert("Không thể tạo báo cáo: Không có nguồn nào sẵn sàng hoặc các nguồn không có nội dung văn bản.");
+        return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    }
 
     const id = `hist-report-${Date.now()}`;
     const newItem: StudioHistoryItem = {
-        id, type: 'report', status: 'loading', name: 'Báo cáo tổng hợp',
+        id, type: 'report', status: 'loading', name: 'BC_SmeFund',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         sourceCount: readySources.length,
     };
@@ -820,10 +841,11 @@ function App() {
     setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: [newItem, ...(n.studioHistory || [])] } : n));
 
     try {
-        const htmlReport = await generateFinancialReport(readySources);
+        // Pass chat history to the report generator so it can include user notes
+        const htmlReport = await generateFinancialReport(readySources, notebook.chatHistory);
         openReportInNewTab(htmlReport);
         setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'completed', data: htmlReport } : item) } : n));
-        return `Đã tạo và mở báo cáo tổng hợp cho sổ ghi chú "${notebook.name}".`;
+        return `Đã tạo và mở BC_SmeFund cho sổ ghi chú "${notebook.name}".`;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
@@ -836,7 +858,10 @@ function App() {
     if (!notebook) return "Không tìm thấy sổ ghi chú.";
     
     const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
-    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    if (readySources.length === 0) {
+        alert("Không thể tạo thẻ ghi nhớ: Không có nguồn nào sẵn sàng hoặc các nguồn không có nội dung văn bản.");
+        return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    }
 
     const id = `hist-flashcards-${Date.now()}`;
     const newItem: StudioHistoryItem = {
@@ -864,7 +889,10 @@ function App() {
     if (!notebook) return "Không tìm thấy sổ ghi chú.";
     
     const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
-    if (readySources.length === 0) return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    if (readySources.length === 0) {
+        alert("Không thể tạo bài kiểm tra: Không có nguồn nào sẵn sàng hoặc các nguồn không có nội dung văn bản.");
+        return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    }
 
     const id = `hist-quiz-${Date.now()}`;
     const newItem: StudioHistoryItem = {
@@ -884,6 +912,50 @@ function App() {
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
         return `Không thể tạo bài kiểm tra: ${errorMessage}`;
+    }
+  }, [notebooks]);
+
+  const handleGenerateVideo = useCallback(async (notebookId: string): Promise<string> => {
+    const notebook = notebooks.find(n => n.id === notebookId);
+    if (!notebook) return "Không tìm thấy sổ ghi chú.";
+
+    const readySources = notebook.sources.filter(s => s.status === 'ready' && s.groundingText);
+    if (readySources.length === 0) {
+        alert("Không thể tạo video: Không có nguồn nào sẵn sàng hoặc các nguồn không có nội dung văn bản.");
+        return `Sổ ghi chú "${notebook.name}" không có nguồn nào sẵn sàng.`;
+    }
+
+    // Ensure we have a valid API Key for Veo
+    if (window.aistudio) {
+        try {
+            const hasKey = await window.aistudio.hasSelectedApiKey();
+            if (!hasKey) {
+                await window.aistudio.openSelectKey();
+            }
+        } catch (e) {
+            console.warn("AI Studio key selection failed or not available", e);
+        }
+    }
+
+    const id = `hist-video-${Date.now()}`;
+    const newItem: StudioHistoryItem = {
+        id, type: 'video', status: 'loading', name: 'Tổng quan bằng Video',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sourceCount: readySources.length,
+    };
+
+    setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: [newItem, ...(n.studioHistory || [])] } : n));
+
+    try {
+        const script = await generateVideoScript(readySources);
+        const videoBase64 = await generateVideo(script);
+        
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'completed', data: videoBase64 } : item) } : n));
+        return `Đã tạo video tổng quan cho sổ ghi chú "${notebook.name}".`;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setNotebooks(prev => prev.map(n => n.id === notebookId ? { ...n, studioHistory: n.studioHistory.map(item => item.id === id ? { ...item, status: 'error', error: errorMessage } : item) } : n));
+        return `Không thể tạo video: ${errorMessage}`;
     }
   }, [notebooks]);
 
@@ -953,10 +1025,12 @@ function App() {
       onGenerateReport={() => activeNotebookId && handleGenerateReport(activeNotebookId)}
       onGenerateFlashcards={() => activeNotebookId && handleGenerateFlashcards(activeNotebookId)}
       onGenerateQuiz={() => activeNotebookId && handleGenerateQuiz(activeNotebookId)}
+      onGenerateVideo={() => activeNotebookId && handleGenerateVideo(activeNotebookId)}
       onOpenMindMap={openMindMapInNewTab}
       onOpenReport={openReportInNewTab}
       onOpenFlashcards={openFlashcardsInNewTab}
       onOpenQuiz={openQuizInNewTab}
+      onOpenVideo={openVideoInNewTab}
     />;
   };
 

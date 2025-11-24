@@ -37,11 +37,20 @@ export interface Notebook {
 
 export type StudioHistoryItem = {
   id: string;
-  type: 'mindmap' | 'audio' | 'report' | 'flashcards' | 'quiz';
+  type: 'mindmap' | 'audio' | 'report' | 'flashcards' | 'quiz' | 'video';
   status: 'loading' | 'completed' | 'error';
   name: string;
   timestamp: string;
   sourceCount: number;
-  data?: any; // Mermaid code for mindmap, base64 audio data for audio, HTML string for report, JSON for flashcards/quiz
+  data?: any; // Mermaid code for mindmap, base64 audio/video data, HTML string for report, JSON for flashcards/quiz
   error?: string;
 };
+
+declare global {
+    interface Window {
+        aistudio?: {
+            hasSelectedApiKey(): Promise<boolean>;
+            openSelectKey(): Promise<void>;
+        };
+    }
+}
